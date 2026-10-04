@@ -2,9 +2,46 @@ enum AppPage { chat, agents, changes, settings }
 
 enum SettingsTab { general, models, tools, shortcuts }
 
-enum ChatMessageRole { user, assistant }
+enum ChatMessageRole { user, assistant, tool }
 
-enum ChatMessageStatus { streaming, complete, stopped, failed }
+enum ChatMessageStatus {
+  streaming,
+  complete,
+  stopped,
+  failed,
+  awaitingApproval,
+}
+
+enum AgentPermissionMode {
+  chatOnly,
+  askBeforeEachAction,
+  autoApproveProjectReads,
+}
+
+enum ToolActionStatus {
+  awaitingApproval,
+  running,
+  completed,
+  denied,
+  failed,
+  cancelled,
+}
+
+class AgentToolCall {
+  const AgentToolCall({
+    required this.id,
+    required this.name,
+    required this.arguments,
+    required this.rawArguments,
+    required this.hasValidArguments,
+  });
+
+  final String id;
+  final String name;
+  final Map<String, dynamic> arguments;
+  final String rawArguments;
+  final bool hasValidArguments;
+}
 
 class ProviderProfile {
   const ProviderProfile({
@@ -34,6 +71,11 @@ class ChatMessage {
     required this.status,
     this.error,
     this.attachments = const [],
+    this.toolCalls = const [],
+    this.toolCallId,
+    this.toolName,
+    this.toolArguments = const {},
+    this.toolActionStatus,
   });
 
   final String id;
@@ -42,6 +84,32 @@ class ChatMessage {
   final ChatMessageStatus status;
   final String? error;
   final List<ChatAttachment> attachments;
+  final List<AgentToolCall> toolCalls;
+  final String? toolCallId;
+  final String? toolName;
+  final Map<String, dynamic> toolArguments;
+  final ToolActionStatus? toolActionStatus;
+
+  ChatMessage copyWith({
+    String? content,
+    ChatMessageStatus? status,
+    String? error,
+    List<AgentToolCall>? toolCalls,
+    ToolActionStatus? toolActionStatus,
+  }) =>
+      ChatMessage(
+        id: id,
+        role: role,
+        content: content ?? this.content,
+        status: status ?? this.status,
+        error: error ?? this.error,
+        attachments: attachments,
+        toolCalls: toolCalls ?? this.toolCalls,
+        toolCallId: toolCallId,
+        toolName: toolName,
+        toolArguments: toolArguments,
+        toolActionStatus: toolActionStatus ?? this.toolActionStatus,
+      );
 }
 
 class ChatAttachment {

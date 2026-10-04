@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app_theme.dart';
 import '../models.dart';
 import '../widgets/app_icons.dart';
+import '../widgets/project_access_menu.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
@@ -15,6 +16,8 @@ class SettingsScreen extends StatelessWidget {
     required this.onNotice,
     required this.workspacePath,
     required this.onSelectWorkspace,
+    required this.permissionMode,
+    required this.onPermissionModeChanged,
   });
 
   final SettingsTab selectedTab;
@@ -25,6 +28,8 @@ class SettingsScreen extends StatelessWidget {
   final ValueChanged<String> onNotice;
   final String? workspacePath;
   final VoidCallback onSelectWorkspace;
+  final AgentPermissionMode permissionMode;
+  final ValueChanged<AgentPermissionMode> onPermissionModeChanged;
 
   String get _title => switch (selectedTab) {
         SettingsTab.general => 'General',
@@ -92,7 +97,10 @@ class SettingsScreen extends StatelessWidget {
           onAddProvider: onAddProvider,
           onDeleteProvider: onDeleteProvider,
         ),
-      SettingsTab.tools => const _ToolSettings(),
+      SettingsTab.tools => _ToolSettings(
+          permissionMode: permissionMode,
+          onPermissionModeChanged: onPermissionModeChanged,
+        ),
       SettingsTab.shortcuts => const _ShortcutSettings(),
     };
   }
@@ -557,80 +565,97 @@ class _ProviderDialogState extends State<_ProviderDialog> {
 }
 
 class _ToolSettings extends StatelessWidget {
-  const _ToolSettings();
+  const _ToolSettings({
+    required this.permissionMode,
+    required this.onPermissionModeChanged,
+  });
+
+  final AgentPermissionMode permissionMode;
+  final ValueChanged<AgentPermissionMode> onPermissionModeChanged;
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _PermissionTile(
-          icon: AppIcons.searchRounded,
-          title: 'Read and search files',
-          subtitle: 'The agent can inspect the project.',
-          value: true,
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(15),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Choose project access',
+                  style: TextStyle(
+                    color: AppColors.ink,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                const Text(
+                  'This setting controls which read-only tools are sent to the selected model.',
+                  style: TextStyle(
+                    color: AppColors.muted,
+                    fontSize: 12,
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 13),
+                ProjectAccessMenu(
+                  value: permissionMode,
+                  onChanged: onPermissionModeChanged,
+                ),
+              ],
+            ),
+          ),
         ),
-        SizedBox(height: 10),
-        _PermissionTile(
-          icon: AppIcons.editNoteRounded,
-          title: 'Edit files',
-          subtitle: 'Review changes before accepting them.',
-          value: false,
-        ),
-        SizedBox(height: 10),
-        _PermissionTile(
-          icon: AppIcons.terminalRounded,
-          title: 'Run commands',
-          subtitle: 'Ask for approval before each command.',
-          value: false,
-        ),
-        SizedBox(height: 10),
-        _PermissionTile(
-          icon: AppIcons.sourceOutlined,
-          title: 'Git operations',
-          subtitle: 'Confirm before changing the repository.',
-          value: false,
-        ),
-        SizedBox(height: 16),
-        _SafetyNote(),
+        const SizedBox(height: 12),
+        const _AvailableProjectTools(),
+        const SizedBox(height: 14),
+        const _SafetyNote(),
       ],
     );
   }
 }
 
-class _PermissionTile extends StatefulWidget {
-  const _PermissionTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final bool value;
-
-  @override
-  State<_PermissionTile> createState() => _PermissionTileState();
-}
-
-class _PermissionTileState extends State<_PermissionTile> {
-  late bool value = widget.value;
+class _AvailableProjectTools extends StatelessWidget {
+  const _AvailableProjectTools();
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: SwitchListTile.adaptive(
-        value: value,
-        onChanged: (next) => setState(() => value = next),
-        secondary: Icon(widget.icon, color: AppColors.blueDeep),
-        title: Text(
-          widget.title,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        subtitle: Text(widget.subtitle),
-        activeThumbColor: AppColors.blue,
+    const tools = [
+      (
+        AppIcons.folderOpenRounded,
+        'List project files',
+        'Inspect readable files and folders.',
       ),
+      (
+        AppIcons.searchRounded,
+        'Search project files',
+        'Find literal text in supported source and text files.',
+      ),
+      (
+        AppIcons.fileCodeOutlined,
+        'Read a project file',
+        'Read one supported file within the selected project.',
+      ),
+    ];
+    return Column(
+      children: [
+        for (final tool in tools)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Card(
+              child: ListTile(
+                leading: Icon(tool.$1, color: AppColors.blueDeep),
+                title: Text(tool.$2),
+                subtitle: Text(tool.$3),
+                dense: true,
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -654,7 +679,7 @@ class _SafetyNote extends StatelessWidget {
           SizedBox(width: 9),
           Expanded(
             child: Text(
-              'Approvals appear before an action runs. These controls are visual previews and do not restrict real tools yet.',
+              'Project reads stay inside the selected folder. Credential files, generated folders, unsupported files, and symbolic links are excluded. File edits and terminal commands are not available.',
               style: TextStyle(
                 color: AppColors.ink,
                 fontSize: 12,

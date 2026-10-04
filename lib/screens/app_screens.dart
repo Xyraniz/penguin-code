@@ -4,6 +4,7 @@ import '../app_theme.dart';
 import '../models.dart';
 import '../services/project_attachment_loader.dart';
 import '../widgets/app_icons.dart';
+import '../widgets/project_access_menu.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
@@ -15,6 +16,7 @@ class ChatScreen extends StatefulWidget {
     required this.messages,
     required this.isGenerating,
     required this.providerLabel,
+    required this.permissionMode,
     required this.onSend,
     required this.onPickAttachments,
     required this.onStop,
@@ -25,6 +27,9 @@ class ChatScreen extends StatefulWidget {
     required this.onConfigureModels,
     required this.onOpenAgents,
     required this.onOpenChanges,
+    required this.onPermissionModeChanged,
+    required this.onApproveTool,
+    required this.onDenyTool,
   });
 
   final String? title;
@@ -34,6 +39,7 @@ class ChatScreen extends StatefulWidget {
   final List<ChatMessage> messages;
   final bool isGenerating;
   final String? providerLabel;
+  final AgentPermissionMode permissionMode;
   final bool Function(String, List<ChatAttachment>) onSend;
   final Future<List<ChatAttachment>> Function(
     List<ChatAttachment> alreadyAttached,
@@ -46,6 +52,9 @@ class ChatScreen extends StatefulWidget {
   final VoidCallback onConfigureModels;
   final VoidCallback onOpenAgents;
   final VoidCallback onOpenChanges;
+  final ValueChanged<AgentPermissionMode> onPermissionModeChanged;
+  final ValueChanged<String> onApproveTool;
+  final ValueChanged<String> onDenyTool;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -162,6 +171,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 _MessageTimeline(
                   messages: widget.messages,
                   onRetry: widget.onRetry,
+                  onApproveTool: widget.onApproveTool,
+                  onDenyTool: widget.onDenyTool,
                 )
               else
                 _ConversationPlaceholder(
@@ -182,6 +193,8 @@ class _ChatScreenState extends State<ChatScreen> {
           enabled: widget.project != null,
           isGenerating: widget.isGenerating,
           providerLabel: widget.providerLabel,
+          permissionMode: widget.permissionMode,
+          onPermissionModeChanged: widget.onPermissionModeChanged,
           attachments: _pendingAttachments,
           isPickingAttachments: _isPickingAttachments,
           onAddAttachments: _pickAttachments,
@@ -353,7 +366,7 @@ class _EmptyChatWelcome extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
                     const Text(
-                      'Only files you attach are read and sent to your selected provider. Other project files are not accessed or changed.',
+                      'Project access follows your selected permission. When enabled, the agent can only read supported files inside this folder. It cannot edit files or run commands.',
                       style: const TextStyle(
                         color: AppColors.muted,
                         fontSize: 11,
@@ -487,7 +500,7 @@ class _ConversationPlaceholder extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Only files you attach are read and sent to your selected provider. Other project files are not accessed or changed.',
+              'Project access follows your selected permission. When enabled, the agent can only read supported files inside this folder. It cannot edit files or run commands.',
               style: TextStyle(
                 color: AppColors.muted,
                 fontSize: 13,
@@ -526,6 +539,8 @@ class _Composer extends StatelessWidget {
     required this.enabled,
     required this.isGenerating,
     required this.providerLabel,
+    required this.permissionMode,
+    required this.onPermissionModeChanged,
     required this.attachments,
     required this.isPickingAttachments,
     required this.onAddAttachments,
@@ -539,6 +554,8 @@ class _Composer extends StatelessWidget {
   final bool enabled;
   final bool isGenerating;
   final String? providerLabel;
+  final AgentPermissionMode permissionMode;
+  final ValueChanged<AgentPermissionMode> onPermissionModeChanged;
   final List<ChatAttachment> attachments;
   final bool isPickingAttachments;
   final VoidCallback onAddAttachments;
@@ -655,12 +672,19 @@ class _Composer extends StatelessWidget {
                                 ),
                         ),
                         const SizedBox(width: 2),
+                        ProjectAccessMenu(
+                          value: permissionMode,
+                          onChanged: onPermissionModeChanged,
+                          compact: true,
+                          enabled: enabled && !isGenerating,
+                        ),
+                        const SizedBox(width: 8),
                         Flexible(
                           child: Text(
                             enabled && attachments.isNotEmpty
-                                ? '${attachments.length} file${attachments.length == 1 ? '' : 's'} attached · only selected files are sent.'
+                                ? '${attachments.length} file${attachments.length == 1 ? '' : 's'} attached · ${permissionMode.compactLabel}.'
                                 : enabled
-                                    ? 'Only files you select are sent to the model.'
+                                    ? 'Project access: ${permissionMode.compactLabel}.'
                                     : 'Select a project folder to begin.',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -730,10 +754,17 @@ class _Composer extends StatelessWidget {
 }
 
 class _MessageTimeline extends StatefulWidget {
-  const _MessageTimeline({required this.messages, required this.onRetry});
+  const _MessageTimeline({
+    required this.messages,
+    required this.onRetry,
+    required this.onApproveTool,
+    required this.onDenyTool,
+  });
 
   final List<ChatMessage> messages;
   final ValueChanged<String> onRetry;
+  final ValueChanged<String> onApproveTool;
+  final ValueChanged<String> onDenyTool;
 
   @override
   State<_MessageTimeline> createState() => _MessageTimelineState();
@@ -775,6 +806,13 @@ class _MessageTimelineState extends State<_MessageTimeline> {
           separatorBuilder: (context, index) => const SizedBox(height: 18),
           itemBuilder: (context, index) {
             final message = widget.messages[index];
+            if (message.role == ChatMessageRole.tool) {
+              return _ToolActionCard(
+                message: message,
+                onApprove: widget.onApproveTool,
+                onDeny: widget.onDenyTool,
+              );
+            }
             final user = message.role == ChatMessageRole.user;
             return Align(
               alignment: user ? Alignment.centerRight : Alignment.centerLeft,
@@ -904,6 +942,164 @@ class _MessageTimelineState extends State<_MessageTimeline> {
               ),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolActionCard extends StatelessWidget {
+  const _ToolActionCard({
+    required this.message,
+    required this.onApprove,
+    required this.onDeny,
+  });
+
+  final ChatMessage message;
+  final ValueChanged<String> onApprove;
+  final ValueChanged<String> onDeny;
+
+  @override
+  Widget build(BuildContext context) {
+    final callId = message.toolCallId;
+    final name = switch (message.toolName) {
+      'list_project_files' => 'List project files',
+      'search_project_files' => 'Search project files',
+      'read_project_file' => 'Read a project file',
+      _ => 'Project file action',
+    };
+    final target =
+        message.toolArguments['path'] ?? message.toolArguments['query'] ?? '.';
+    final actionStatus = message.toolActionStatus;
+    final icon = switch (message.toolName) {
+      'list_project_files' => AppIcons.folderOpenRounded,
+      'search_project_files' => AppIcons.searchRounded,
+      _ => AppIcons.fileCodeOutlined,
+    };
+    final statusLabel = switch (actionStatus) {
+      ToolActionStatus.awaitingApproval => 'Approval needed',
+      ToolActionStatus.running => 'Working',
+      ToolActionStatus.completed => 'Completed',
+      ToolActionStatus.denied => 'Denied',
+      ToolActionStatus.failed => 'Could not run',
+      ToolActionStatus.cancelled => 'Cancelled',
+      null => 'Project action',
+    };
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: Card(
+          key: Key('chat.tool.${message.id}'),
+          child: Padding(
+            padding: const EdgeInsets.all(13),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: AppColors.ice,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(icon, size: 17, color: AppColors.blueDeep),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            name,
+                            style: const TextStyle(
+                              color: AppColors.ink,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          SelectableText(
+                            '$target',
+                            style: const TextStyle(
+                              color: AppColors.muted,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (actionStatus == ToolActionStatus.running)
+                      const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    else
+                      Text(
+                        statusLabel,
+                        style: TextStyle(
+                          color: actionStatus == ToolActionStatus.denied
+                              ? AppColors.muted
+                              : AppColors.blueDeep,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                  ],
+                ),
+                if (actionStatus == ToolActionStatus.awaitingApproval) ...[
+                  const Padding(
+                    padding: EdgeInsets.only(top: 10),
+                    child: Text(
+                      'Penguin Code will only read files inside the selected project.',
+                      style: TextStyle(
+                        color: AppColors.muted,
+                        fontSize: 11,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 9),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      FilledButton.icon(
+                        key: Key('chat.tool.approve.$callId'),
+                        onPressed:
+                            callId == null ? null : () => onApprove(callId),
+                        icon: const Icon(AppIcons.checkRounded, size: 15),
+                        label: const Text('Approve once'),
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size(0, 34),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      TextButton(
+                        key: Key('chat.tool.deny.$callId'),
+                        onPressed: callId == null ? null : () => onDeny(callId),
+                        child: const Text('Deny'),
+                      ),
+                    ],
+                  ),
+                ] else if (message.content.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  SelectableText(
+                    message.content,
+                    key: Key('chat.tool.result.${message.id}'),
+                    maxLines: 10,
+                    style: const TextStyle(
+                      color: AppColors.ink,
+                      fontSize: 11,
+                      height: 1.45,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );

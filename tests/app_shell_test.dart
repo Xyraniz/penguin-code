@@ -56,7 +56,7 @@ void main() {
     expect(find.text('No messages'), findsOneWidget);
     expect(
       find.text(
-        'Only files you attach are read and sent to your selected provider. Other project files are not accessed or changed.',
+        'Project access follows your selected permission. When enabled, the agent can only read supported files inside this folder. It cannot edit files or run commands.',
       ),
       findsOneWidget,
     );

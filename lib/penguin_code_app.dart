@@ -9,6 +9,7 @@ import 'app_theme.dart';
 import 'models.dart';
 import 'services/openai_compatible_chat_client.dart';
 import 'services/project_attachment_loader.dart';
+import 'services/project_read_tool_executor.dart';
 import 'screens/app_screens.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/app_icons.dart';
@@ -74,12 +75,15 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final List<AgentTask> _agentTasks = [];
   final Map<String, List<ChatMessage>> _messagesByChatId = {};
   final Map<String, Completer<void>> _generationStops = {};
+  final Map<String, Completer<bool>> _pendingToolApprovals = {};
   late final OpenAiCompatibleChatClient _chatClient;
   final _attachmentLoader = const ProjectAttachmentLoader();
+  final _projectReadToolExecutor = const ProjectReadToolExecutor();
   int _messageId = 0;
   String? _activeChatId;
   String? _activeProjectId;
   String? _selectedModelId;
+  AgentPermissionMode _permissionMode = AgentPermissionMode.askBeforeEachAction;
 
   @override
   void initState() {
@@ -123,6 +127,45 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(text)));
   }
+
+  void _resolveToolApproval(String toolCallId, bool approved) {
+    final approval = _pendingToolApprovals[toolCallId];
+    if (approval != null && !approval.isCompleted) approval.complete(approved);
+  }
+
+  void _updateToolAction(
+    String toolCallId, {
+    required String content,
+    required ToolActionStatus actionStatus,
+  }) {
+    for (final messages in _messagesByChatId.values) {
+      final index = messages.indexWhere(
+        (message) => message.toolCallId == toolCallId,
+      );
+      if (index < 0) continue;
+      setState(() {
+        messages[index] = messages[index].copyWith(
+          content: content,
+          status: ChatMessageStatus.complete,
+          toolActionStatus: actionStatus,
+        );
+      });
+      return;
+    }
+  }
+
+  void _appendChatMessage(String chatId, ChatMessage message) {
+    final messages = _messagesByChatId[chatId];
+    if (messages == null) return;
+    setState(() => messages.add(message));
+  }
+
+  bool _isProviderHistoryMessage(ChatMessage message) =>
+      message.status != ChatMessageStatus.failed &&
+      (message.role == ChatMessageRole.user ||
+          message.role == ChatMessageRole.tool ||
+          message.content.isNotEmpty ||
+          message.toolCalls.isNotEmpty);
 
   String _normalizePath(String path) =>
       Platform.isWindows ? path.replaceAll('/', r'\').toLowerCase() : path;
@@ -400,12 +443,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       status: ChatMessageStatus.streaming,
     );
     final history = [
-      ...existingMessages.where(
-        (message) =>
-            message.status != ChatMessageStatus.failed &&
-            (message.content.isNotEmpty ||
-                message.role == ChatMessageRole.user),
-      ),
+      ...existingMessages.where(_isProviderHistoryMessage),
       userMessage,
     ];
     final stop = Completer<void>();
@@ -432,6 +470,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         assistantMessageId: assistantMessage.id,
         provider: provider,
         history: history,
+        projectPath: project.path,
+        permissionMode: _permissionMode,
         stop: stop,
       ),
     );
@@ -446,48 +486,184 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     required String assistantMessageId,
     required ProviderProfile provider,
     required List<ChatMessage> history,
+    required String projectPath,
+    required AgentPermissionMode permissionMode,
     required Completer<void> stop,
   }) async {
+    var activeAssistantMessageId = assistantMessageId;
+    var completedToolCalls = 0;
     try {
-      await for (final text in _chatClient.streamCompletion(
-        provider: provider,
-        history: history,
-        abortTrigger: stop.future,
-      )) {
-        if (!mounted) return;
+      for (var toolRound = 0; toolRound < 6; toolRound++) {
+        if (stop.isCompleted) return;
+        final toolCalls = <AgentToolCall>[];
+        await for (final event in _chatClient.streamEvents(
+          provider: provider,
+          history: history,
+          abortTrigger: stop.future,
+          enableProjectTools: permissionMode != AgentPermissionMode.chatOnly,
+        )) {
+          if (!mounted) return;
+          switch (event) {
+            case ChatTextEvent(:final text):
+              _updateChatMessage(
+                chatId,
+                activeAssistantMessageId,
+                (message) => message.copyWith(
+                  content: message.content + text,
+                  status: ChatMessageStatus.streaming,
+                ),
+              );
+            case ChatToolCallEvent(:final toolCall):
+              toolCalls.add(toolCall);
+          }
+        }
+        if (!mounted || stop.isCompleted) return;
+        if (toolCalls.isEmpty) {
+          _updateChatMessage(
+            chatId,
+            activeAssistantMessageId,
+            (message) => message.copyWith(status: ChatMessageStatus.complete),
+          );
+          return;
+        }
+
+        final currentAssistant = _messagesByChatId[chatId]!
+            .firstWhere((message) => message.id == activeAssistantMessageId);
+        final assistantToolMessage = currentAssistant.copyWith(
+          content: currentAssistant.content.isEmpty
+              ? 'Checking project files.'
+              : currentAssistant.content,
+          status: ChatMessageStatus.complete,
+          toolCalls: List.unmodifiable(toolCalls),
+        );
         _updateChatMessage(
           chatId,
-          assistantMessageId,
-          (message) => ChatMessage(
-            id: message.id,
-            role: message.role,
-            content: message.content + text,
-            status: ChatMessageStatus.streaming,
-          ),
+          activeAssistantMessageId,
+          (_) => assistantToolMessage,
         );
+        history.add(assistantToolMessage);
+
+        for (final toolCall in toolCalls) {
+          if (stop.isCompleted) return;
+          completedToolCalls++;
+          final action = ChatMessage(
+            id: _newMessageId(),
+            role: ChatMessageRole.tool,
+            content: '',
+            status: permissionMode == AgentPermissionMode.askBeforeEachAction
+                ? ChatMessageStatus.awaitingApproval
+                : ChatMessageStatus.complete,
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            toolArguments: toolCall.arguments,
+            toolActionStatus:
+                permissionMode == AgentPermissionMode.askBeforeEachAction &&
+                        toolCall.hasValidArguments &&
+                        _projectReadToolExecutor.supports(toolCall.name)
+                    ? ToolActionStatus.awaitingApproval
+                    : ToolActionStatus.running,
+          );
+          _appendChatMessage(chatId, action);
+
+          var approved =
+              permissionMode == AgentPermissionMode.autoApproveProjectReads;
+          final withinToolLimit = completedToolCalls <= 8;
+          if (permissionMode == AgentPermissionMode.askBeforeEachAction &&
+              toolCall.hasValidArguments &&
+              _projectReadToolExecutor.supports(toolCall.name) &&
+              withinToolLimit) {
+            final approval = Completer<bool>();
+            _pendingToolApprovals[toolCall.id] = approval;
+            approved = await Future.any<bool>([
+              approval.future,
+              stop.future.then((_) => false),
+            ]);
+            _pendingToolApprovals.remove(toolCall.id);
+          }
+
+          if (stop.isCompleted) {
+            _updateToolAction(
+              toolCall.id,
+              content: 'Approval was cancelled when the response was stopped.',
+              actionStatus: ToolActionStatus.cancelled,
+            );
+            return;
+          }
+
+          final String toolResult;
+          final ToolActionStatus actionStatus;
+          if (!toolCall.hasValidArguments) {
+            toolResult =
+                'The tool arguments were invalid. No project files were accessed.';
+            actionStatus = ToolActionStatus.failed;
+          } else if (!_projectReadToolExecutor.supports(toolCall.name)) {
+            toolResult = 'The requested project tool is not available.';
+            actionStatus = ToolActionStatus.failed;
+          } else if (!withinToolLimit) {
+            toolResult =
+                'The project action limit for this response was reached. No project files were accessed.';
+            actionStatus = ToolActionStatus.failed;
+          } else if (!approved) {
+            toolResult =
+                'The user denied this project access request. No project files were accessed.';
+            actionStatus = ToolActionStatus.denied;
+          } else if (permissionMode == AgentPermissionMode.chatOnly) {
+            toolResult =
+                'Project access is disabled. No project files were accessed.';
+            actionStatus = ToolActionStatus.denied;
+          } else {
+            _updateToolAction(
+              toolCall.id,
+              content: '',
+              actionStatus: ToolActionStatus.running,
+            );
+            toolResult = await _projectReadToolExecutor.execute(
+              projectPath: projectPath,
+              call: toolCall,
+            );
+            actionStatus = toolResult.startsWith('Tool error:')
+                ? ToolActionStatus.failed
+                : ToolActionStatus.completed;
+          }
+          if (!mounted) return;
+          final completedAction = action.copyWith(
+            content: toolResult,
+            status: ChatMessageStatus.complete,
+            toolActionStatus: actionStatus,
+          );
+          _updateChatMessage(chatId, action.id, (_) => completedAction);
+          history.add(completedAction);
+        }
+
+        if (toolRound == 5) {
+          _appendChatMessage(
+            chatId,
+            ChatMessage(
+              id: _newMessageId(),
+              role: ChatMessageRole.assistant,
+              content:
+                  'The project action limit for this response was reached. Send a follow-up message to continue.',
+              status: ChatMessageStatus.complete,
+            ),
+          );
+          return;
+        }
+
+        final nextAssistant = ChatMessage(
+          id: _newMessageId(),
+          role: ChatMessageRole.assistant,
+          content: '',
+          status: ChatMessageStatus.streaming,
+        );
+        activeAssistantMessageId = nextAssistant.id;
+        _appendChatMessage(chatId, nextAssistant);
       }
-      if (!mounted) return;
-      _updateChatMessage(
-        chatId,
-        assistantMessageId,
-        (message) => ChatMessage(
-          id: message.id,
-          role: message.role,
-          content: message.content,
-          status: stop.isCompleted
-              ? ChatMessageStatus.stopped
-              : ChatMessageStatus.complete,
-        ),
-      );
     } on ChatConnectionException catch (error) {
       if (!mounted || stop.isCompleted) return;
       _updateChatMessage(
         chatId,
-        assistantMessageId,
-        (message) => ChatMessage(
-          id: message.id,
-          role: message.role,
-          content: message.content,
+        activeAssistantMessageId,
+        (message) => message.copyWith(
           status: ChatMessageStatus.failed,
           error: error.message,
         ),
@@ -496,11 +672,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       if (!mounted || stop.isCompleted) return;
       _updateChatMessage(
         chatId,
-        assistantMessageId,
-        (message) => ChatMessage(
-          id: message.id,
-          role: message.role,
-          content: message.content,
+        activeAssistantMessageId,
+        (message) => message.copyWith(
           status: ChatMessageStatus.failed,
           error:
               'The response could not be read. Check the provider and try again.',
@@ -509,6 +682,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     } finally {
       if (identical(_generationStops[chatId], stop)) {
         _generationStops.remove(chatId);
+        _pendingToolApprovals
+            .removeWhere((_, approval) => approval.isCompleted);
         if (mounted) setState(() {});
       }
     }
@@ -529,8 +704,21 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   void _stopGeneration(String chatId) {
     final stop = _generationStops[chatId];
     if (stop == null) return;
-    if (!stop.isCompleted) stop.complete();
     final messages = _messagesByChatId[chatId];
+    for (final message in messages ?? const <ChatMessage>[]) {
+      if (message.role != ChatMessageRole.tool ||
+          message.toolActionStatus != ToolActionStatus.awaitingApproval ||
+          message.toolCallId == null) {
+        continue;
+      }
+      _resolveToolApproval(message.toolCallId!, false);
+      _updateToolAction(
+        message.toolCallId!,
+        content: 'Approval was cancelled when the response was stopped.',
+        actionStatus: ToolActionStatus.cancelled,
+      );
+    }
+    if (!stop.isCompleted) stop.complete();
     if (messages == null) return;
     final activeIndex = messages.lastIndexWhere(
       (message) =>
@@ -569,19 +757,30 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     }
     final messages = _messagesByChatId[chatId];
     if (messages == null) return;
+    ChatConversation? conversation;
+    for (final chat in _chats) {
+      if (chat.id == chatId) {
+        conversation = chat;
+        break;
+      }
+    }
+    Project? project;
+    for (final item in _projects) {
+      if (item.id == conversation?.projectId) {
+        project = item;
+        break;
+      }
+    }
+    if (project == null) {
+      _showNotice('The project for this chat is no longer available.');
+      return;
+    }
     final assistantIndex = messages.indexWhere(
       (message) => message.id == assistantMessageId,
     );
     if (assistantIndex < 1) return;
     final previousMessages = messages.take(assistantIndex).toList();
-    final history = previousMessages
-        .where(
-          (message) =>
-              message.status != ChatMessageStatus.failed &&
-              (message.content.isNotEmpty ||
-                  message.role == ChatMessageRole.user),
-        )
-        .toList(growable: false);
+    final history = previousMessages.where(_isProviderHistoryMessage).toList();
     final stop = Completer<void>();
     setState(() {
       messages[assistantIndex] = ChatMessage(
@@ -598,6 +797,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         assistantMessageId: assistantMessageId,
         provider: provider,
         history: history,
+        projectPath: project.path,
+        permissionMode: _permissionMode,
         stop: stop,
       ),
     );
@@ -685,15 +886,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                       : _messagesByChatId[_activeChatId] ??
                                           const [],
                                   isGenerating: _activeChatId != null &&
-                                      (_messagesByChatId[_activeChatId]?.any(
-                                            (message) =>
-                                                message.role ==
-                                                    ChatMessageRole.assistant &&
-                                                message.status ==
-                                                    ChatMessageStatus.streaming,
-                                          ) ??
-                                          false),
+                                      _generationStops
+                                          .containsKey(_activeChatId),
                                   providerLabel: _selectedProvider?.routeLabel,
+                                  permissionMode: _permissionMode,
                                   onSend: _submitPrompt,
                                   onPickAttachments: _pickProjectAttachments,
                                   onStop: () => _stopGeneration(_activeChatId!),
@@ -709,6 +905,13 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                       _selectPage(AppPage.agents),
                                   onOpenChanges: () =>
                                       _selectPage(AppPage.changes),
+                                  onPermissionModeChanged: (mode) => setState(
+                                    () => _permissionMode = mode,
+                                  ),
+                                  onApproveTool: (toolCallId) =>
+                                      _resolveToolApproval(toolCallId, true),
+                                  onDenyTool: (toolCallId) =>
+                                      _resolveToolApproval(toolCallId, false),
                                 ),
                               AppPage.agents => AgentsScreen(
                                   key: const Key('page.agents'),
@@ -733,6 +936,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                   onNotice: _showNotice,
                                   workspacePath: _activeProject?.path,
                                   onSelectWorkspace: _createProjectFromFolder,
+                                  permissionMode: _permissionMode,
+                                  onPermissionModeChanged: (mode) => setState(
+                                    () => _permissionMode = mode,
+                                  ),
                                 ),
                             },
                           ),

@@ -18,13 +18,18 @@ Penguin Code is an early native desktop prototype with a working text chat for O
 - Provider and model selection
 - Streaming chat composer with stop and retry controls
 - Explicit project file attachments for chat context
+- Project access selector with chat-only, per-action approval, and automatic read modes
+- OpenAI-compatible tool calling for listing, searching, and reading project files
+- Project-bounded read tools with limits for paths, file types, output size, and tool rounds
 - Session-only chat history and provider profiles
 - Subagent task queue preview
 - Change review, tool permission, appearance, and shortcut screens
 
-Projects, chats, messages, provider profiles, and API keys stay in memory for the current session. Messages are sent to the selected provider's `/chat/completions` endpoint as a streaming request. Use an HTTPS URL for remote providers; unencrypted HTTP is allowed only for loopback addresses such as `localhost` and `127.0.0.1`. The API key is optional for providers that do not require authentication.
+Projects, chats, messages, provider profiles, API keys, and the project access mode stay in memory for the current session. Messages are sent to the selected provider's `/chat/completions` endpoint as a streaming request. Use an HTTPS URL for remote providers; unencrypted HTTP is allowed only for loopback addresses such as `localhost` and `127.0.0.1`. The API key is optional for providers that do not require authentication. Project tools require a provider that supports OpenAI-compatible tool calling.
 
-Chat reads only source or text files that you explicitly select from the active project, then sends their contents and project-relative paths to the configured provider with your message. You can attach up to four files per message, with a 64 KiB limit per file and 128 KiB total. Files outside the project, generated folders, non-text files, and common credential or private-key files are rejected. Attachments are read-only; other project files stay local. Autonomous file tools, edits, subagents, and change review remain future work.
+Project access can be set to **Chat only**, **Ask before every action**, or **Auto-approve project reads**. When enabled, the model can list folders, search text, and read supported files inside the selected project. Every action in approval mode appears in chat before it runs. Reads reject paths outside the project, symbolic links, generated folders, unsupported files, and common credential or private-key files. Tool output and search work are bounded. These tools do not edit files or run commands.
+
+You can also attach up to four source or text files per message, with a 64 KiB limit per file and 128 KiB total. Their project-relative paths and contents are sent to the configured provider with your message. File edits, terminal commands, parallel subagents, and change review remain future work.
 
 ## Configure a provider
 

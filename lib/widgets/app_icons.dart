@@ -18,6 +18,7 @@ abstract final class AppIcons {
   static const folderOpenRounded = LucideIcons.folderOpen;
   static const fileCodeOutlined = LucideIcons.fileCode2;
   static const hourglassEmptyRounded = LucideIcons.hourglass;
+  static const hand = LucideIcons.hand;
   static const hubOutlined = LucideIcons.network;
   static const infoOutlineRounded = LucideIcons.info;
   static const keyOutlined = LucideIcons.keyRound;
@@ -36,6 +37,7 @@ abstract final class AppIcons {
   static const securityOutlined = LucideIcons.shieldAlert;
   static const settingsOutlined = LucideIcons.settings;
   static const shieldOutlined = LucideIcons.shield;
+  static const shieldCheck = LucideIcons.shieldCheck;
   static const smartToyOutlined = LucideIcons.bot;
   static const stopRounded = LucideIcons.squareStop;
   static const sourceOutlined = LucideIcons.gitBranch;
