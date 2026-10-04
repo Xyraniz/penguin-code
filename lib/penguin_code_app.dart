@@ -9,7 +9,7 @@ import 'app_theme.dart';
 import 'models.dart';
 import 'services/openai_compatible_chat_client.dart';
 import 'services/project_attachment_loader.dart';
-import 'services/project_read_tool_executor.dart';
+import 'services/project_tool_executor.dart';
 import 'screens/app_screens.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/app_icons.dart';
@@ -82,7 +82,6 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final Map<String, Completer<bool>> _pendingToolApprovals = {};
   late final OpenAiCompatibleChatClient _chatClient;
   final _attachmentLoader = const ProjectAttachmentLoader();
-  final _projectReadToolExecutor = const ProjectReadToolExecutor();
   int _messageId = 0;
   String? _activeChatId;
   String? _activeProjectId;
@@ -118,6 +117,38 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       if (chat.id == _activeChatId) return chat;
     }
     return null;
+  }
+
+  List<ProjectFileChange> get _projectChanges {
+    final projectById = {for (final project in _projects) project.id: project};
+    final changes = <ProjectFileChange>[];
+    for (final chat in _chats) {
+      final projectName = projectById[chat.projectId]?.name;
+      if (projectName == null) continue;
+      for (final message
+          in _messagesByChatId[chat.id] ?? const <ChatMessage>[]) {
+        if (message.toolName != 'edit_project_file' ||
+            message.toolActionStatus != ToolActionStatus.completed) {
+          continue;
+        }
+        final path = message.toolArguments['file_path'];
+        final oldText = message.toolArguments['old_string'];
+        final newText = message.toolArguments['new_string'];
+        if (path is! String || oldText is! String || newText is! String) {
+          continue;
+        }
+        changes.add(
+          ProjectFileChange(
+            projectName: projectName,
+            chatTitle: chat.title,
+            relativePath: path,
+            oldText: oldText,
+            newText: newText,
+          ),
+        );
+      }
+    }
+    return List.unmodifiable(changes.reversed);
   }
 
   ProviderProfile? get _selectedProvider {
@@ -172,6 +203,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     final approval = _pendingToolApprovals[toolCallId];
     if (approval != null && !approval.isCompleted) approval.complete(approved);
   }
+
+  bool _requiresToolApproval(AgentPermissionMode mode, String toolName) =>
+      toolName == 'edit_project_file' ||
+      mode == AgentPermissionMode.askBeforeEachAction;
 
   void _updateToolAction(
     String toolCallId, {
@@ -605,6 +640,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   }) async {
     var activeAssistantMessageId = assistantMessageId;
     var completedToolCalls = 0;
+    final projectToolExecutor = ProjectToolExecutor();
     try {
       for (var toolRound = 0; toolRound < 6; toolRound++) {
         if (stop.isCompleted) return;
@@ -681,27 +717,28 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             id: _newMessageId(),
             role: ChatMessageRole.tool,
             content: '',
-            status: permissionMode == AgentPermissionMode.askBeforeEachAction
+            status: _requiresToolApproval(permissionMode, toolCall.name)
                 ? ChatMessageStatus.awaitingApproval
                 : ChatMessageStatus.complete,
             toolCallId: toolCall.id,
             toolName: toolCall.name,
             toolArguments: toolCall.arguments,
             toolActionStatus:
-                permissionMode == AgentPermissionMode.askBeforeEachAction &&
+                _requiresToolApproval(permissionMode, toolCall.name) &&
                         toolCall.hasValidArguments &&
-                        _projectReadToolExecutor.supports(toolCall.name)
+                        projectToolExecutor.supports(toolCall.name)
                     ? ToolActionStatus.awaitingApproval
                     : ToolActionStatus.running,
           );
           _appendChatMessage(chatId, action);
 
           var approved =
-              permissionMode == AgentPermissionMode.autoApproveProjectReads;
+              permissionMode == AgentPermissionMode.autoApproveProjectReads &&
+                  toolCall.name != 'edit_project_file';
           final withinToolLimit = completedToolCalls <= 8;
-          if (permissionMode == AgentPermissionMode.askBeforeEachAction &&
+          if (_requiresToolApproval(permissionMode, toolCall.name) &&
               toolCall.hasValidArguments &&
-              _projectReadToolExecutor.supports(toolCall.name) &&
+              projectToolExecutor.supports(toolCall.name) &&
               withinToolLimit) {
             final approval = Completer<bool>();
             _pendingToolApprovals[toolCall.id] = approval;
@@ -727,7 +764,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             toolResult =
                 'The tool arguments were invalid. No project files were accessed.';
             actionStatus = ToolActionStatus.failed;
-          } else if (!_projectReadToolExecutor.supports(toolCall.name)) {
+          } else if (!projectToolExecutor.supports(toolCall.name)) {
             toolResult = 'The requested project tool is not available.';
             actionStatus = ToolActionStatus.failed;
           } else if (!withinToolLimit) {
@@ -748,7 +785,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
               content: '',
               actionStatus: ToolActionStatus.running,
             );
-            toolResult = await _projectReadToolExecutor.execute(
+            toolResult = await projectToolExecutor.execute(
               projectPath: projectPath,
               call: toolCall,
             );
@@ -1054,8 +1091,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                   tasks: _agentTasks,
                                   onAddTask: _addAgentTask,
                                 ),
-                              AppPage.changes => const ChangesScreen(
-                                  key: Key('page.changes'),
+                              AppPage.changes => ChangesScreen(
+                                  key: const Key('page.changes'),
+                                  changes: _projectChanges,
                                 ),
                               AppPage.settings => SettingsScreen(
                                   key: const Key('page.settings'),

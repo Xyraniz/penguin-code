@@ -366,7 +366,7 @@ class _EmptyChatWelcome extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
                     const Text(
-                      'Project access follows your selected permission. When enabled, the agent can only read supported files inside this folder. It cannot edit files or run commands.',
+                      'Project access follows your selected permission for reads. File edits always need your approval. The agent cannot run commands.',
                       style: const TextStyle(
                         color: AppColors.muted,
                         fontSize: 11,
@@ -500,7 +500,7 @@ class _ConversationPlaceholder extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Project access follows your selected permission. When enabled, the agent can only read supported files inside this folder. It cannot edit files or run commands.',
+              'Project access follows your selected permission for reads. File edits always need your approval. The agent cannot run commands.',
               style: TextStyle(
                 color: AppColors.muted,
                 fontSize: 13,
@@ -966,10 +966,14 @@ class _ToolActionCard extends StatelessWidget {
       'list_project_files' => 'List project files',
       'search_project_files' => 'Search project files',
       'read_project_file' => 'Read a project file',
+      'edit_project_file' => 'Edit a project file',
       _ => 'Project file action',
     };
-    final target =
-        message.toolArguments['path'] ?? message.toolArguments['query'] ?? '.';
+    final isEdit = message.toolName == 'edit_project_file';
+    final target = message.toolArguments['file_path'] ??
+        message.toolArguments['path'] ??
+        message.toolArguments['query'] ??
+        '.';
     final actionStatus = message.toolActionStatus;
     final icon = switch (message.toolName) {
       'list_project_files' => AppIcons.folderOpenRounded,
@@ -1051,17 +1055,29 @@ class _ToolActionCard extends StatelessWidget {
                   ],
                 ),
                 if (actionStatus == ToolActionStatus.awaitingApproval) ...[
-                  const Padding(
-                    padding: EdgeInsets.only(top: 10),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
                     child: Text(
-                      'Penguin Code will only read files inside the selected project.',
-                      style: TextStyle(
+                      isEdit
+                          ? 'Review the proposed replacement. It applies only if the file was read and has not changed since then.'
+                          : 'Penguin Code will only read files inside the selected project.',
+                      style: const TextStyle(
                         color: AppColors.muted,
                         fontSize: 11,
                         height: 1.4,
                       ),
                     ),
                   ),
+                  if (isEdit) ...[
+                    _ProjectTextDiff(
+                      oldText: message.toolArguments['old_string'] is String
+                          ? message.toolArguments['old_string'] as String
+                          : '',
+                      newText: message.toolArguments['new_string'] is String
+                          ? message.toolArguments['new_string'] as String
+                          : '',
+                    ),
+                  ],
                   const SizedBox(height: 9),
                   Wrap(
                     spacing: 8,
@@ -1084,18 +1100,29 @@ class _ToolActionCard extends StatelessWidget {
                       ),
                     ],
                   ),
-                ] else if (message.content.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  SelectableText(
-                    message.content,
-                    key: Key('chat.tool.result.${message.id}'),
-                    maxLines: 10,
-                    style: const TextStyle(
-                      color: AppColors.ink,
-                      fontSize: 11,
-                      height: 1.45,
+                ] else ...[
+                  if (isEdit)
+                    _ProjectTextDiff(
+                      oldText: message.toolArguments['old_string'] is String
+                          ? message.toolArguments['old_string'] as String
+                          : '',
+                      newText: message.toolArguments['new_string'] is String
+                          ? message.toolArguments['new_string'] as String
+                          : '',
                     ),
-                  ),
+                  if (message.content.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    SelectableText(
+                      message.content,
+                      key: Key('chat.tool.result.${message.id}'),
+                      maxLines: 10,
+                      style: const TextStyle(
+                        color: AppColors.ink,
+                        fontSize: 11,
+                        height: 1.45,
+                      ),
+                    ),
+                  ],
                 ],
               ],
             ),
@@ -1104,6 +1131,79 @@ class _ToolActionCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ProjectTextDiff extends StatelessWidget {
+  const _ProjectTextDiff({required this.oldText, required this.newText});
+
+  final String oldText;
+  final String newText;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        key: const Key('chat.tool.edit.diff'),
+        margin: const EdgeInsets.only(top: 10),
+        decoration: BoxDecoration(
+          color: AppColors.canvas,
+          border: Border.all(color: AppColors.line),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _DiffTextBlock(label: 'Before', text: oldText, added: false),
+            const Divider(height: 1),
+            _DiffTextBlock(label: 'After', text: newText, added: true),
+          ],
+        ),
+      );
+}
+
+class _DiffTextBlock extends StatelessWidget {
+  const _DiffTextBlock({
+    required this.label,
+    required this.text,
+    required this.added,
+  });
+
+  final String label;
+  final String text;
+  final bool added;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 9),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                color: added ? AppColors.blueDeep : AppColors.muted,
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 5),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 112),
+              child: Scrollbar(
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    text.isEmpty ? 'Empty replacement' : text,
+                    style: TextStyle(
+                      color: added ? AppColors.ink : AppColors.muted,
+                      fontFamily: 'monospace',
+                      fontSize: 11,
+                      height: 1.45,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
 }
 
 class _MessageStatus extends StatelessWidget {
@@ -1269,31 +1369,97 @@ class _DelegateTaskDialogState extends State<_DelegateTaskDialog> {
 }
 
 class ChangesScreen extends StatelessWidget {
-  const ChangesScreen({super.key});
+  const ChangesScreen({super.key, required this.changes});
+
+  final List<ProjectFileChange> changes;
 
   @override
   Widget build(BuildContext context) {
-    return const _PageScaffold(
+    return _PageScaffold(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _PageHeading(
+          const _PageHeading(
             eyebrow: 'Project review',
             title: 'Changes',
-            description:
-                'Review modified files before accepting the agent’s work.',
+            description: 'Review file edits applied by the agent this session.',
           ),
-          SizedBox(height: 24),
-          _EmptyPanel(
-            icon: AppIcons.differenceOutlined,
-            title: 'No pending changes',
-            description:
-                'File diffs and accept or discard actions will appear here.',
-          ),
+          const SizedBox(height: 24),
+          if (changes.isEmpty)
+            const _EmptyPanel(
+              icon: AppIcons.differenceOutlined,
+              title: 'No file edits yet',
+              description: 'Approved project edits will appear here.',
+            )
+          else
+            Expanded(
+              child: ListView.separated(
+                key: const Key('changes.list'),
+                itemCount: changes.length,
+                separatorBuilder: (context, index) =>
+                    const SizedBox(height: 10),
+                itemBuilder: (context, index) => _ProjectChangeCard(
+                  key: ValueKey('changes.item.$index'),
+                  change: changes[index],
+                ),
+              ),
+            ),
         ],
       ),
     );
   }
+}
+
+class _ProjectChangeCard extends StatelessWidget {
+  const _ProjectChangeCard({super.key, required this.change});
+
+  final ProjectFileChange change;
+
+  @override
+  Widget build(BuildContext context) => Card(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(
+                    AppIcons.fileCodeOutlined,
+                    size: 18,
+                    color: AppColors.blueDeep,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      change.relativePath,
+                      key: Key('changes.item.path.${change.relativePath}'),
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.ink,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${change.projectName} · ${change.chatTitle}',
+                style: const TextStyle(
+                  color: AppColors.muted,
+                  fontSize: 11,
+                ),
+              ),
+              _ProjectTextDiff(
+                oldText: change.oldText,
+                newText: change.newText,
+              ),
+            ],
+          ),
+        ),
+      );
 }
 
 void _showNotice(BuildContext context, String text) {

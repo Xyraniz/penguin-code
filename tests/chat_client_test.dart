@@ -134,6 +134,38 @@ void main() {
       );
     });
 
+    test('advertises a scoped edit tool with an exact-match schema', () async {
+      late http.BaseRequest sentRequest;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          sentRequest = request;
+          return _response(
+              'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n');
+        }),
+      );
+
+      await client
+          .streamEvents(
+            provider: _provider(),
+            history: const [],
+            abortTrigger: Completer<void>().future,
+            enableProjectTools: true,
+          )
+          .toList();
+
+      final body = jsonDecode((sentRequest as http.Request).body)
+          as Map<String, dynamic>;
+      final tools = body['tools'] as List<dynamic>;
+      final editTool = tools.cast<Map<String, dynamic>>().singleWhere((tool) =>
+          (tool['function'] as Map<String, dynamic>)['name'] ==
+          'edit_project_file');
+      final function = editTool['function'] as Map<String, dynamic>;
+      final parameters = function['parameters'] as Map<String, dynamic>;
+      expect(function['description'], contains('user must approve'));
+      expect(parameters['required'], ['file_path', 'old_string', 'new_string']);
+      expect(parameters['additionalProperties'], isFalse);
+    });
+
     test('reports sanitized model discovery errors', () async {
       final unauthorized = OpenAiCompatibleChatClient(
         client: _FakeClient((_) async => _response('secret body', status: 401)),

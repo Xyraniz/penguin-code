@@ -666,7 +666,7 @@ class _ToolSettings extends StatelessWidget {
                 ),
                 const SizedBox(height: 5),
                 const Text(
-                  'This setting controls which read-only tools are sent to the selected model.',
+                  'This setting controls project read tools. File edits always require your approval.',
                   style: TextStyle(
                     color: AppColors.muted,
                     fontSize: 12,
@@ -711,6 +711,11 @@ class _AvailableProjectTools extends StatelessWidget {
         AppIcons.fileCodeOutlined,
         'Read a project file',
         'Read one supported file within the selected project.',
+      ),
+      (
+        AppIcons.editNoteRounded,
+        'Edit a project file',
+        'Review a unique text replacement and approve it before it is applied.',
       ),
     ];
     return Column(

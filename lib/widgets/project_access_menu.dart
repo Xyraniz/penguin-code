@@ -16,9 +16,9 @@ extension AgentPermissionModePresentation on AgentPermissionMode {
         AgentPermissionMode.chatOnly =>
           'The agent cannot access project files.',
         AgentPermissionMode.askBeforeEachAction =>
-          'Approve each file list, search, or read before it runs.',
+          'Approve each file list, search, or read before it runs. File edits always ask first.',
         AgentPermissionMode.autoApproveProjectReads =>
-          'List, search, and read supported files inside the selected project.',
+          'List, search, and read supported files. File edits still require approval.',
       };
 
   String get compactLabel => switch (this) {

@@ -169,6 +169,22 @@ class ChatMessage {
       );
 }
 
+class ProjectFileChange {
+  const ProjectFileChange({
+    required this.projectName,
+    required this.chatTitle,
+    required this.relativePath,
+    required this.oldText,
+    required this.newText,
+  });
+
+  final String projectName;
+  final String chatTitle;
+  final String relativePath;
+  final String oldText;
+  final String newText;
+}
+
 class ChatAttachment {
   const ChatAttachment({
     required this.relativePath,

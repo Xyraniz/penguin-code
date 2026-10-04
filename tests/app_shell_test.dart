@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -56,7 +57,7 @@ void main() {
     expect(find.text('No messages'), findsOneWidget);
     expect(
       find.text(
-        'Project access follows your selected permission. When enabled, the agent can only read supported files inside this folder. It cannot edit files or run commands.',
+        'Project access follows your selected permission for reads. File edits always need your approval. The agent cannot run commands.',
       ),
       findsOneWidget,
     );
@@ -301,6 +302,143 @@ void main() {
     expect(find.text('Checking project files.'), findsNothing);
   });
 
+  testWidgets('shows approved edit diffs and lists only applied changes', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final projectDirectory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('penguin-edit-ui-'),
+    ))!;
+    addTearDown(
+      () => tester.runAsync(() => projectDirectory.delete(recursive: true)),
+    );
+    final source = File(
+      '${projectDirectory.path}${Platform.pathSeparator}main.dart',
+    );
+    await tester.runAsync(
+      () => source.writeAsString('const greeting = "Hello";\n'),
+    );
+    final project = Project(
+      id: 'editable-project',
+      name: 'Editable project',
+      path: projectDirectory.path,
+    );
+
+    var responseIndex = 0;
+    final editArguments = jsonEncode({
+      'file_path': 'main.dart',
+      'old_string': 'Hello',
+      'new_string': 'Penguin',
+    });
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        final body = switch (responseIndex++) {
+          0 || 3 => _sseToolCall(
+              name: 'read_project_file',
+              arguments: '{"path":"main.dart"}',
+              id: 'read-$responseIndex',
+            ),
+          1 => _sseToolCall(
+              name: 'edit_project_file',
+              arguments: editArguments,
+              id: 'edit-denied',
+            ),
+          2 => _sseChunk('The denied edit was not applied.'),
+          4 => _sseToolCall(
+              name: 'edit_project_file',
+              arguments: editArguments,
+              id: 'edit-approved',
+            ),
+          _ => _sseChunk('The approved edit was applied.'),
+        };
+        return _chatResponse('$body\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(
+      PenguinCodeApp(
+        initialProjects: [project],
+        chatClient: client,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _configureProvider(tester);
+    await _startProjectChatFor(tester, project.id);
+    await tester.tap(find.byKey(const Key('project.access.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(
+        const Key('project.access.option.autoApproveProjectReads'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Replace the greeting',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.byKey(const Key('chat.tool.deny.edit-denied')),
+    );
+
+    expect(find.text('Edit a project file'), findsOneWidget);
+    expect(find.text('Before'), findsOneWidget);
+    expect(find.text('After'), findsOneWidget);
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Hello";\n',
+    );
+    final denyEditButton = find.byKey(const Key('chat.tool.deny.edit-denied'));
+    await tester.ensureVisible(denyEditButton);
+    await tester.pump();
+    await tester.tap(denyEditButton);
+    await tester.pumpAndSettle();
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Hello";\n',
+    );
+    expect(find.text('The denied edit was not applied.'), findsOneWidget);
+
+    await _startProjectChatFor(tester, project.id);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Replace the greeting safely',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.byKey(const Key('chat.tool.approve.edit-approved')),
+    );
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Hello";\n',
+    );
+    final approveEditButton =
+        find.byKey(const Key('chat.tool.approve.edit-approved'));
+    await tester.ensureVisible(approveEditButton);
+    await tester.pump();
+    await tester.tap(approveEditButton);
+    await _pumpUntilVisible(
+      tester,
+      find.text('The approved edit was applied.'),
+    );
+
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Penguin";\n',
+    );
+    expect(find.text('The approved edit was applied.'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('topbar.changes')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('changes.list')), findsOneWidget);
+    expect(find.text('main.dart'), findsOneWidget);
+    expect(find.text('Editable project · Replace the greeting safely'),
+        findsOneWidget);
+    expect(find.text('Hello'), findsOneWidget);
+    expect(find.text('Penguin'), findsOneWidget);
+  });
+
   testWidgets('sends text and renders a streamed provider reply',
       (tester) async {
     await _setDesktopSize(tester);
@@ -540,7 +678,8 @@ void main() {
     await tester.tap(find.byKey(const Key('topbar.changes')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('page.changes')), findsOneWidget);
-    expect(find.text('No pending changes'), findsOneWidget);
+    expect(
+        find.text('Approved project edits will appear here.'), findsOneWidget);
   });
 }
 
@@ -596,6 +735,26 @@ Future<void> _startProjectChat(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+Future<void> _startProjectChatFor(
+  WidgetTester tester,
+  String projectId,
+) async {
+  await tester.tap(find.byKey(const Key('sidebar.new-chat')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(Key('project.select.$projectId')));
+  await tester.pumpAndSettle();
+}
+
+Future<void> _pumpUntilVisible(WidgetTester tester, Finder finder) async {
+  for (var attempt = 0; attempt < 40 && finder.evaluate().isEmpty; attempt++) {
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 10)),
+    );
+  }
+  expect(finder, findsOneWidget);
+}
+
 Future<void> _selectDiscoveredModel(
   WidgetTester tester,
   String modelId,
@@ -620,17 +779,22 @@ String _sseChunk(String content) => 'data: ${jsonEncode({
           ]
         })}\n\n';
 
-String _sseToolCall() => 'data: ${jsonEncode({
+String _sseToolCall({
+  String name = 'read_project_file',
+  String arguments = '{"path":"README.md"}',
+  String id = 'call-1',
+}) =>
+    'data: ${jsonEncode({
           'choices': [
             {
               'delta': {
                 'tool_calls': [
                   {
                     'index': 0,
-                    'id': 'call-1',
+                    'id': id,
                     'function': {
-                      'name': 'read_project_file',
-                      'arguments': '{"path":"README.md"}',
+                      'name': name,
+                      'arguments': arguments,
                     },
                   },
                 ],

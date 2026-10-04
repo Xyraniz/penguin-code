@@ -4,14 +4,19 @@ import 'dart:io';
 import '../models.dart';
 import 'project_attachment_loader.dart';
 
-class ProjectReadToolExecutor {
-  const ProjectReadToolExecutor();
+class ProjectToolExecutor {
+  ProjectToolExecutor();
 
   static const supportedTools = <String>{
     'list_project_files',
     'search_project_files',
     'read_project_file',
+    'edit_project_file',
   };
+
+  static const maxEditTextBytes = 16 * 1024;
+
+  final Map<String, String> _observedFiles = {};
 
   bool supports(String toolName) => supportedTools.contains(toolName);
 
@@ -50,10 +55,11 @@ class ProjectReadToolExecutor {
         'list_project_files' => await _listFiles(root, call.arguments),
         'search_project_files' => await _searchFiles(root, call.arguments),
         'read_project_file' => await _readFile(root, call.arguments),
+        'edit_project_file' => await _editFile(root, call.arguments),
         _ => 'Tool error: unsupported project tool ${call.name}.',
       };
     } on ProjectAttachmentException catch (error) {
-      return 'Tool error: could not read that project file. ${error.message}';
+      return 'Tool error: project file action failed. ${error.message}';
     } on FileSystemException {
       return 'Tool error: the selected project folder or requested path is no longer available.';
     } catch (_) {
@@ -182,8 +188,102 @@ class ProjectReadToolExecutor {
     );
     if (loaded.isEmpty)
       return 'Tool error: the requested project file could not be read.';
+    _observedFiles[_normalize(requested.absolutePath)] = loaded.single.content;
     return _bounded(
         'File: ${loaded.single.relativePath}\n\n${loaded.single.content}');
+  }
+
+  Future<String> _editFile(
+    String root,
+    Map<String, dynamic> arguments,
+  ) async {
+    final pathValue = arguments['file_path'];
+    final oldString = arguments['old_string'];
+    final newString = arguments['new_string'];
+    if (pathValue is! String || pathValue.trim().isEmpty) {
+      throw const ProjectAttachmentException(
+        'A project-relative file path is required.',
+      );
+    }
+    if (oldString is! String || oldString.isEmpty) {
+      throw const ProjectAttachmentException(
+        'The old text must be a non-empty string.',
+      );
+    }
+    if (newString is! String || newString == oldString) {
+      throw const ProjectAttachmentException(
+        'The replacement text must be a string different from the old text.',
+      );
+    }
+    if (utf8.encode(oldString).length > maxEditTextBytes ||
+        utf8.encode(newString).length > maxEditTextBytes) {
+      throw const ProjectAttachmentException(
+        'A single edit cannot replace more than 16 KiB of text.',
+      );
+    }
+
+    final requested = await _resolveProjectPath(root, pathValue);
+    if (!_isAllowedPath(requested.relativePath, isDirectory: false) ||
+        !_hasSupportedExtension(requested.relativePath)) {
+      throw const ProjectAttachmentException(
+        'That file is not available to project edit tools.',
+      );
+    }
+    final observationKey = _normalize(requested.absolutePath);
+    final observedContent = _observedFiles[observationKey];
+    if (observedContent == null) {
+      throw const ProjectAttachmentException(
+        'Read the file with read_project_file before editing it.',
+      );
+    }
+
+    final loaded = await const ProjectAttachmentLoader().readFiles(
+      projectPath: root,
+      selectedPaths: [requested.absolutePath],
+    );
+    if (loaded.isEmpty) {
+      throw const ProjectAttachmentException(
+        'The requested project file could not be read.',
+      );
+    }
+    final currentContent = loaded.single.content;
+    if (currentContent != observedContent) {
+      throw const ProjectAttachmentException(
+        'The file changed after it was read. Read it again before editing.',
+      );
+    }
+
+    final match = currentContent.indexOf(oldString);
+    if (match < 0) {
+      throw const ProjectAttachmentException(
+        'The old text was not found. Read the latest file and prepare a new edit.',
+      );
+    }
+    if (currentContent.indexOf(oldString, match + 1) >= 0) {
+      throw const ProjectAttachmentException(
+        'The old text appears more than once. Use a more specific unique match.',
+      );
+    }
+
+    final updatedContent = currentContent.replaceRange(
+      match,
+      match + oldString.length,
+      newString,
+    );
+    if (utf8.encode(updatedContent).length >
+        ProjectAttachmentLoader.maxFileBytes) {
+      throw const ProjectAttachmentException(
+        'The edited file would exceed the 64 KiB project file limit.',
+      );
+    }
+
+    await File(requested.absolutePath).writeAsString(
+      updatedContent,
+      encoding: utf8,
+      flush: true,
+    );
+    _observedFiles.remove(observationKey);
+    return 'Updated ${requested.relativePath}.';
   }
 
   Future<String?> _readSearchableFile(
@@ -229,11 +329,19 @@ class ProjectReadToolExecutor {
       final type = await FileSystemEntity.type(path, followLinks: false);
       if (type == FileSystemEntityType.link) {
         throw const ProjectAttachmentException(
-          'Symbolic links are not available to project read tools.',
+          'Symbolic links are not available to project tools.',
         );
       }
     }
-    final resolved = await Directory(path).resolveSymbolicLinks();
+    final entityType = await FileSystemEntity.type(path, followLinks: false);
+    if (entityType == FileSystemEntityType.notFound) {
+      throw const ProjectAttachmentException(
+        'The requested file or folder does not exist in the selected project.',
+      );
+    }
+    final resolved = entityType == FileSystemEntityType.file
+        ? await File(path).resolveSymbolicLinks()
+        : await Directory(path).resolveSymbolicLinks();
     final normalizedRoot = _normalize(root);
     final normalizedResolved = _normalize(resolved);
     final rootPrefix =
