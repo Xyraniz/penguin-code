@@ -16,6 +16,7 @@ abstract final class AppIcons {
   static const differenceOutlined = LucideIcons.fileDiff;
   static const editNoteRounded = LucideIcons.filePenLine;
   static const folderOpenRounded = LucideIcons.folderOpen;
+  static const fileCodeOutlined = LucideIcons.fileCode2;
   static const hourglassEmptyRounded = LucideIcons.hourglass;
   static const hubOutlined = LucideIcons.network;
   static const infoOutlineRounded = LucideIcons.info;

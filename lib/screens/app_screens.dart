@@ -2,18 +2,21 @@ import 'package:flutter/material.dart';
 
 import '../app_theme.dart';
 import '../models.dart';
+import '../services/project_attachment_loader.dart';
 import '../widgets/app_icons.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
     required this.title,
+    required this.chatId,
     required this.project,
     required this.hasModel,
     required this.messages,
     required this.isGenerating,
     required this.providerLabel,
     required this.onSend,
+    required this.onPickAttachments,
     required this.onStop,
     required this.onRetry,
     required this.onChooseProject,
@@ -25,12 +28,16 @@ class ChatScreen extends StatefulWidget {
   });
 
   final String? title;
+  final String? chatId;
   final Project? project;
   final bool hasModel;
   final List<ChatMessage> messages;
   final bool isGenerating;
   final String? providerLabel;
-  final bool Function(String) onSend;
+  final bool Function(String, List<ChatAttachment>) onSend;
+  final Future<List<ChatAttachment>> Function(
+    List<ChatAttachment> alreadyAttached,
+  ) onPickAttachments;
   final VoidCallback onStop;
   final ValueChanged<String> onRetry;
   final VoidCallback onChooseProject;
@@ -47,6 +54,17 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
+  final _pendingAttachments = <ChatAttachment>[];
+  bool _isPickingAttachments = false;
+
+  @override
+  void didUpdateWidget(covariant ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.chatId != widget.chatId ||
+        oldWidget.project?.id != widget.project?.id) {
+      _pendingAttachments.clear();
+    }
+  }
 
   @override
   void dispose() {
@@ -57,9 +75,44 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _send() {
     final prompt = _controller.text.trim();
-    if (prompt.isNotEmpty && widget.onSend(prompt)) {
+    if (prompt.isEmpty && _pendingAttachments.isEmpty) return;
+    if (widget.onSend(prompt, List.unmodifiable(_pendingAttachments))) {
       _controller.clear();
+      setState(_pendingAttachments.clear);
     }
+  }
+
+  Future<void> _pickAttachments() async {
+    if (widget.project == null || _isPickingAttachments) return;
+    if (_pendingAttachments.length >= ProjectAttachmentLoader.maxAttachments) {
+      _showNotice(context, 'A message can include up to 4 files.');
+      return;
+    }
+    final projectId = widget.project!.id;
+    final chatId = widget.chatId;
+    setState(() => _isPickingAttachments = true);
+    try {
+      final files = await widget.onPickAttachments(
+        List.unmodifiable(_pendingAttachments),
+      );
+      if (!mounted ||
+          files.isEmpty ||
+          widget.project?.id != projectId ||
+          widget.chatId != chatId) {
+        return;
+      }
+      setState(() => _pendingAttachments.addAll(files));
+    } finally {
+      if (mounted) setState(() => _isPickingAttachments = false);
+    }
+  }
+
+  void _removeAttachment(String relativePath) {
+    setState(() {
+      _pendingAttachments.removeWhere(
+        (attachment) => attachment.relativePath == relativePath,
+      );
+    });
   }
 
   void _useSuggestion(String value) {
@@ -129,10 +182,10 @@ class _ChatScreenState extends State<ChatScreen> {
           enabled: widget.project != null,
           isGenerating: widget.isGenerating,
           providerLabel: widget.providerLabel,
-          onAttachment: () => _showNotice(
-            context,
-            'Attachments will be available when the agent is connected.',
-          ),
+          attachments: _pendingAttachments,
+          isPickingAttachments: _isPickingAttachments,
+          onAddAttachments: _pickAttachments,
+          onRemoveAttachment: _removeAttachment,
         ),
       ],
     );
@@ -473,7 +526,10 @@ class _Composer extends StatelessWidget {
     required this.enabled,
     required this.isGenerating,
     required this.providerLabel,
-    required this.onAttachment,
+    required this.attachments,
+    required this.isPickingAttachments,
+    required this.onAddAttachments,
+    required this.onRemoveAttachment,
   });
 
   final TextEditingController controller;
@@ -483,7 +539,10 @@ class _Composer extends StatelessWidget {
   final bool enabled;
   final bool isGenerating;
   final String? providerLabel;
-  final VoidCallback onAttachment;
+  final List<ChatAttachment> attachments;
+  final bool isPickingAttachments;
+  final VoidCallback onAddAttachments;
+  final ValueChanged<String> onRemoveAttachment;
 
   @override
   Widget build(BuildContext context) {
@@ -516,6 +575,40 @@ class _Composer extends StatelessWidget {
                 ),
                 child: Column(
                   children: [
+                    if (attachments.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(2, 2, 2, 6),
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+                            for (final attachment in attachments)
+                              InputChip(
+                                key: Key(
+                                  'composer.attachment.${attachment.relativePath}',
+                                ),
+                                avatar: const Icon(
+                                  AppIcons.fileCodeOutlined,
+                                  size: 15,
+                                ),
+                                label: ConstrainedBox(
+                                  constraints:
+                                      const BoxConstraints(maxWidth: 245),
+                                  child: Text(
+                                    attachment.relativePath,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                onDeleted: () => onRemoveAttachment(
+                                  attachment.relativePath,
+                                ),
+                                visualDensity: VisualDensity.compact,
+                                backgroundColor: AppColors.ice,
+                              ),
+                          ],
+                        ),
+                      ),
                     TextField(
                       key: const Key('composer.input'),
                       enabled: enabled,
@@ -543,21 +636,32 @@ class _Composer extends StatelessWidget {
                       children: [
                         IconButton(
                           key: const Key('composer.attach'),
-                          tooltip: 'Attach a file',
-                          onPressed: enabled ? onAttachment : null,
+                          tooltip: 'Attach project files',
+                          onPressed: enabled && !isPickingAttachments
+                              ? onAddAttachments
+                              : null,
                           visualDensity: VisualDensity.compact,
-                          icon: const Icon(
-                            AppIcons.attachFileRounded,
-                            size: 19,
-                            color: AppColors.muted,
-                          ),
+                          icon: isPickingAttachments
+                              ? const SizedBox.square(
+                                  dimension: 17,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(
+                                  AppIcons.attachFileRounded,
+                                  size: 19,
+                                  color: AppColors.muted,
+                                ),
                         ),
                         const SizedBox(width: 2),
                         Flexible(
                           child: Text(
-                            enabled
-                                ? 'Project selected · its files are not sent to the model.'
-                                : 'Select a project folder to begin.',
+                            enabled && attachments.isNotEmpty
+                                ? '${attachments.length} file${attachments.length == 1 ? '' : 's'} attached · only selected files are sent.'
+                                : enabled
+                                    ? 'Only files you select are sent to the model.'
+                                    : 'Select a project folder to begin.',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
@@ -613,8 +717,8 @@ class _Composer extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 providerLabel == null
-                    ? 'Choose a provider to send messages.'
-                    : 'Connected to $providerLabel · project files are not accessed.',
+                    ? 'Choose a provider · selected files are included as context.'
+                    : 'Connected to $providerLabel · selected file context is sent with your message.',
                 style: const TextStyle(color: AppColors.muted, fontSize: 10),
               ),
             ],
@@ -711,17 +815,61 @@ class _MessageTimelineState extends State<_MessageTimeline> {
                           ),
                         ],
                       ),
-                      child: SelectableText(
-                        message.content.isEmpty &&
-                                message.status == ChatMessageStatus.streaming
-                            ? 'Thinking…'
-                            : message.content,
-                        key: Key('chat.message.${message.id}'),
-                        style: TextStyle(
-                          color: user ? Colors.white : AppColors.ink,
-                          fontSize: 13,
-                          height: 1.5,
-                        ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (message.attachments.isNotEmpty) ...[
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 4,
+                              children: [
+                                for (final attachment in message.attachments)
+                                  Chip(
+                                    key: Key(
+                                      'chat.attachment.${message.id}.${attachment.relativePath}',
+                                    ),
+                                    avatar: Icon(
+                                      AppIcons.fileCodeOutlined,
+                                      size: 14,
+                                      color: user
+                                          ? Colors.white
+                                          : AppColors.blueDeep,
+                                    ),
+                                    label: Text(
+                                      attachment.relativePath,
+                                      style: TextStyle(
+                                        color:
+                                            user ? Colors.white : AppColors.ink,
+                                        fontSize: 10,
+                                      ),
+                                    ),
+                                    backgroundColor: user
+                                        ? AppColors.blueDeep
+                                        : AppColors.ice,
+                                    side: BorderSide.none,
+                                    visualDensity: VisualDensity.compact,
+                                  ),
+                              ],
+                            ),
+                            if (message.content.isNotEmpty)
+                              const SizedBox(height: 7),
+                          ],
+                          if (message.content.isNotEmpty ||
+                              (message.status == ChatMessageStatus.streaming &&
+                                  message.attachments.isEmpty))
+                            SelectableText(
+                              message.content.isEmpty
+                                  ? 'Thinking…'
+                                  : message.content,
+                              key: Key('chat.message.${message.id}'),
+                              style: TextStyle(
+                                color: user ? Colors.white : AppColors.ink,
+                                fontSize: 13,
+                                height: 1.5,
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                     if (!user && message.status == ChatMessageStatus.stopped)

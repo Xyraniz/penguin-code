@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'app_theme.dart';
 import 'models.dart';
 import 'services/openai_compatible_chat_client.dart';
+import 'services/project_attachment_loader.dart';
 import 'screens/app_screens.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/app_icons.dart';
@@ -18,10 +19,15 @@ class PenguinCodeApp extends StatelessWidget {
     super.key,
     this.initialProjects = const [],
     this.chatClient,
+    this.attachmentPicker,
   });
 
   final List<Project> initialProjects;
   final OpenAiCompatibleChatClient? chatClient;
+  final Future<List<ChatAttachment>> Function(
+    Project project,
+    List<ChatAttachment> alreadyAttached,
+  )? attachmentPicker;
 
   @override
   Widget build(BuildContext context) {
@@ -32,6 +38,7 @@ class PenguinCodeApp extends StatelessWidget {
       home: PenguinHomeShell(
         initialProjects: initialProjects,
         chatClient: chatClient,
+        attachmentPicker: attachmentPicker,
       ),
     );
   }
@@ -42,10 +49,15 @@ class PenguinHomeShell extends StatefulWidget {
     super.key,
     this.initialProjects = const [],
     this.chatClient,
+    this.attachmentPicker,
   });
 
   final List<Project> initialProjects;
   final OpenAiCompatibleChatClient? chatClient;
+  final Future<List<ChatAttachment>> Function(
+    Project project,
+    List<ChatAttachment> alreadyAttached,
+  )? attachmentPicker;
 
   @override
   State<PenguinHomeShell> createState() => _PenguinHomeShellState();
@@ -63,6 +75,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final Map<String, List<ChatMessage>> _messagesByChatId = {};
   final Map<String, Completer<void>> _generationStops = {};
   late final OpenAiCompatibleChatClient _chatClient;
+  final _attachmentLoader = const ProjectAttachmentLoader();
   int _messageId = 0;
   String? _activeChatId;
   String? _activeProjectId;
@@ -310,7 +323,42 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     });
   }
 
-  bool _submitPrompt(String value) {
+  Future<List<ChatAttachment>> _pickProjectAttachments(
+    List<ChatAttachment> alreadyAttached,
+  ) async {
+    final project = _activeProject;
+    if (project == null) return const [];
+    try {
+      if (widget.attachmentPicker != null) {
+        return await widget.attachmentPicker!(project, alreadyAttached);
+      }
+      final files = await openFiles(
+        acceptedTypeGroups: [
+          const XTypeGroup(
+            label: 'Source and text files',
+            extensions: ProjectAttachmentLoader.supportedExtensions,
+          ),
+        ],
+        initialDirectory: project.path,
+        confirmButtonText: 'Attach files',
+      );
+      if (files.isEmpty) return const [];
+      return await _attachmentLoader.readFiles(
+        projectPath: project.path,
+        selectedPaths: files.map((file) => file.path).toList(growable: false),
+        alreadyAttached: alreadyAttached,
+      );
+    } on ProjectAttachmentException catch (error) {
+      _showNotice(error.message);
+      return const [];
+    } catch (_) {
+      _showNotice('Could not attach those files. Try selecting them again.');
+      return const [];
+    }
+  }
+
+  bool _submitPrompt(String value, List<ChatAttachment> attachments) {
+    if (value.trim().isEmpty && attachments.isEmpty) return false;
     final project = _activeProject;
     if (project == null) {
       _showNotice('Choose a project before starting a chat.');
@@ -340,6 +388,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       role: ChatMessageRole.user,
       content: value,
       status: ChatMessageStatus.complete,
+      attachments: List.unmodifiable(attachments),
     );
     final assistantMessage = ChatMessage(
       id: _newMessageId(),
@@ -366,8 +415,11 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       _generationStops[chatId] = stop;
       final chatIndex = _chats.indexWhere((chat) => chat.id == chatId);
       if (chatIndex >= 0 && _chats[chatIndex].title == 'New chat') {
+        final title = value.isNotEmpty
+            ? (value.length <= 36 ? value : '${value.substring(0, 33)}…')
+            : 'Files: ${attachments.first.relativePath}';
         _chats[chatIndex] = _chats[chatIndex].copyWith(
-          title: value.length <= 36 ? value : '${value.substring(0, 33)}…',
+          title: title,
         );
       }
     });
@@ -622,6 +674,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                               AppPage.chat => ChatScreen(
                                   key: const Key('page.chat'),
                                   title: _activeChat?.title,
+                                  chatId: _activeChatId,
                                   project: _activeProject,
                                   hasModel: _selectedProvider != null,
                                   messages: _activeChatId == null
@@ -639,6 +692,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                           false),
                                   providerLabel: _selectedProvider?.routeLabel,
                                   onSend: _submitPrompt,
+                                  onPickAttachments: _pickProjectAttachments,
                                   onStop: () => _stopGeneration(_activeChatId!),
                                   onRetry: (messageId) => _retryAssistant(
                                     _activeChatId!,

@@ -190,7 +190,7 @@ void main() {
     );
     expect(
         find.text(
-            'Connected to Test provider · test-model · project files are not accessed.'),
+            'Connected to Test provider · test-model · selected file context is sent with your message.'),
         findsOneWidget);
     expect((sentRequest as http.Request).headers['authorization'],
         'Bearer session-test-key');
@@ -199,6 +199,67 @@ void main() {
     expect(body['messages'], [
       {'role': 'user', 'content': 'Explain this value'},
     ]);
+  });
+
+  testWidgets('attaches selected project code as message context',
+      (tester) async {
+    await _setDesktopSize(tester);
+    late http.BaseRequest sentRequest;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        sentRequest = request;
+        return _chatResponse(_sseChunk('I see the selected file.'));
+      }),
+    );
+    await tester.pumpWidget(
+      PenguinCodeApp(
+        initialProjects: const [_testProject],
+        chatClient: client,
+        attachmentPicker: (project, alreadyAttached) async {
+          expect(project.id, _testProject.id);
+          expect(alreadyAttached, isEmpty);
+          return const [
+            ChatAttachment(
+              relativePath: 'lib/example.dart',
+              content: 'const answer = 42;',
+              sizeBytes: 19,
+            ),
+          ];
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _configureProvider(tester);
+    await _startProjectChat(tester);
+    await tester.tap(find.byKey(const Key('composer.attach')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('composer.attachment.lib/example.dart')),
+      findsOneWidget,
+    );
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Explain this code',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await tester.pumpAndSettle();
+
+    final body =
+        jsonDecode((sentRequest as http.Request).body) as Map<String, dynamic>;
+    final messages = body['messages'] as List<dynamic>;
+    expect(messages, hasLength(1));
+    expect(messages.single['content'], contains('lib/example.dart'));
+    expect(messages.single['content'], contains('const answer = 42;'));
+    expect(messages.single['content'], contains('Explain this code'));
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('chat.messages')),
+        matching: find.text('lib/example.dart'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('const answer = 42;'), findsNothing);
   });
 
   testWidgets('stops an active response and keeps its partial text',

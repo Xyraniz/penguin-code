@@ -17,13 +17,14 @@ Penguin Code is an early native desktop prototype with a working text chat for O
 - Lucide outline icons throughout the application
 - Provider and model selection
 - Streaming chat composer with stop and retry controls
+- Explicit project file attachments for chat context
 - Session-only chat history and provider profiles
 - Subagent task queue preview
 - Change review, tool permission, appearance, and shortcut screens
 
 Projects, chats, messages, provider profiles, and API keys stay in memory for the current session. Messages are sent to the selected provider's `/chat/completions` endpoint as a streaming request. Use an HTTPS URL for remote providers; unencrypted HTTP is allowed only for loopback addresses such as `localhost` and `127.0.0.1`. The API key is optional for providers that do not require authentication.
 
-Selecting a project folder records the intended workspace, but chat does not read, write, or execute project files. Subagent execution, tools, attachments, and change review remain interface previews.
+Chat reads only source or text files that you explicitly select from the active project, then sends their contents and project-relative paths to the configured provider with your message. You can attach up to four files per message, with a 64 KiB limit per file and 128 KiB total. Files outside the project, generated folders, non-text files, and common credential or private-key files are rejected. Attachments are read-only; other project files stay local. Autonomous file tools, edits, subagents, and change review remain future work.
 
 ## Configure a provider
 
@@ -46,4 +47,4 @@ Use `-d macos` or `-d linux` on the matching development platform. Flutter can t
 flutter test tests
 ```
 
-The tests cover the app shell, session-only provider setup, request formatting, streaming responses, endpoint validation, cancellation, and chat interaction using fake HTTP responses. No live API key or provider is required.
+The tests cover the app shell, session-only provider setup, request formatting, streaming responses, endpoint validation, cancellation, attachment safety limits, and chat interaction using fake HTTP responses. No live API key or provider is required.

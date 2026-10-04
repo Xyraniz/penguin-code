@@ -33,6 +33,7 @@ class ChatMessage {
     required this.content,
     required this.status,
     this.error,
+    this.attachments = const [],
   });
 
   final String id;
@@ -40,6 +41,19 @@ class ChatMessage {
   final String content;
   final ChatMessageStatus status;
   final String? error;
+  final List<ChatAttachment> attachments;
+}
+
+class ChatAttachment {
+  const ChatAttachment({
+    required this.relativePath,
+    required this.content,
+    required this.sizeBytes,
+  });
+
+  final String relativePath;
+  final String content;
+  final int sizeBytes;
 }
 
 class AgentTask {

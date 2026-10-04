@@ -102,6 +102,50 @@ void main() {
       expect(sentRequest.headers.containsKey('authorization'), isFalse);
     });
 
+    test('sends selected attachments as read-only user context', () async {
+      late http.BaseRequest sentRequest;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          sentRequest = request;
+          return _response(
+            'data: {"choices":[{"delta":{"content":"Reviewed"}}]}\n\n',
+          );
+        }),
+      );
+
+      await client
+          .streamCompletion(
+            provider: _provider(),
+            history: const [
+              ChatMessage(
+                id: 'user-file-1',
+                role: ChatMessageRole.user,
+                content: 'Explain this file',
+                status: ChatMessageStatus.complete,
+                attachments: [
+                  ChatAttachment(
+                    relativePath: 'lib/example.dart',
+                    content: 'const answer = 42;',
+                    sizeBytes: 19,
+                  ),
+                ],
+              ),
+            ],
+            abortTrigger: Completer<void>().future,
+          )
+          .toList();
+
+      final body = jsonDecode((sentRequest as http.Request).body)
+          as Map<String, dynamic>;
+      final messages = body['messages'] as List<dynamic>;
+      expect(messages, hasLength(1));
+      expect(messages.single['role'], 'user');
+      expect(messages.single['content'], contains('lib/example.dart'));
+      expect(messages.single['content'], contains('const answer = 42;'));
+      expect(messages.single['content'], contains('Explain this file'));
+      expect(messages.single['content'], isNot(contains('C:\\Users\\')));
+    });
+
     test('rejects non-HTTPS remote endpoints before making a request',
         () async {
       var requestSent = false;
