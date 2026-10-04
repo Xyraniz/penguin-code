@@ -75,6 +75,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final List<ProviderProfile> _providers = [];
   final Set<String> _refreshingProviderIds = {};
   final Map<String, String> _modelDiscoveryErrors = {};
+  final Map<String, String> _reasoningEffortByModel = {};
   final List<AgentTask> _agentTasks = [];
   final Map<String, List<ChatMessage>> _messagesByChatId = {};
   final Map<String, Completer<void>> _generationStops = {};
@@ -137,6 +138,28 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       if (model.id == provider.model) return model;
     }
     return null;
+  }
+
+  String? get _selectedReasoningEffortId {
+    final model = _selectedModelProfile;
+    if (model == null) return null;
+    final id = _reasoningEffortByModel[_selectedModelKey];
+    return id != null && model.reasoningEfforts.containsKey(id) ? id : null;
+  }
+
+  String get _selectedModelKey =>
+      '$_selectedProviderId\u0000${_selectedModelId ?? ''}';
+
+  void _selectReasoningEffort(String? id) {
+    final model = _selectedModelProfile;
+    if (model == null) return;
+    setState(() {
+      if (id == null || !model.reasoningEfforts.containsKey(id)) {
+        _reasoningEffortByModel.remove(_selectedModelKey);
+      } else {
+        _reasoningEffortByModel[_selectedModelKey] = id;
+      }
+    });
   }
 
   void _showNotice(String text) {
@@ -511,6 +534,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       return false;
     }
     if (_activeChatId == null) _startChat(project);
+    final reasoningEffort = _selectedReasoningEffortId;
     final chatId = _activeChatId!;
     final existingMessages = _messagesByChatId[chatId] ?? const <ChatMessage>[];
     final userMessage = ChatMessage(
@@ -556,6 +580,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         history: history,
         projectPath: project.path,
         permissionMode: _permissionMode,
+        reasoningEffort: reasoningEffort,
         enableProjectTools: _permissionMode != AgentPermissionMode.chatOnly &&
             _selectedModelProfile?.supportsTools != false,
         stop: stop,
@@ -575,6 +600,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     required String projectPath,
     required AgentPermissionMode permissionMode,
     required bool enableProjectTools,
+    required String? reasoningEffort,
     required Completer<void> stop,
   }) async {
     var activeAssistantMessageId = assistantMessageId;
@@ -589,6 +615,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           history: history,
           abortTrigger: stop.future,
           enableProjectTools: enableProjectTools,
+          reasoningEffort: reasoningEffort,
         )) {
           if (!mounted) return;
           switch (event) {
@@ -885,6 +912,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     if (assistantIndex < 1) return;
     final previousMessages = messages.take(assistantIndex).toList();
     final history = previousMessages.where(_isProviderHistoryMessage).toList();
+    final reasoningEffort = _selectedReasoningEffortId;
     final stop = Completer<void>();
     setState(() {
       messages[assistantIndex] = ChatMessage(
@@ -903,6 +931,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         history: history,
         projectPath: project.path,
         permissionMode: _permissionMode,
+        reasoningEffort: reasoningEffort,
         enableProjectTools: _permissionMode != AgentPermissionMode.chatOnly &&
             _selectedModelProfile?.supportsTools != false,
         stop: stop,
@@ -970,9 +999,13 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                             sidebarOpen: showSidebar,
                             activeProject: _activeProject,
                             selectedProvider: _selectedProvider,
+                            selectedModel: _selectedModelProfile,
+                            selectedReasoningEffortId:
+                                _selectedReasoningEffortId,
                             onToggleSidebar: _toggleSidebar,
                             onSelectWorkspace: _chooseProject,
                             onChooseModel: _openModelPicker,
+                            onSelectReasoningEffort: _selectReasoningEffort,
                             onOpenAgents: () => _selectPage(AppPage.agents),
                             onOpenChanges: () => _selectPage(AppPage.changes),
                           ),
@@ -1793,9 +1826,12 @@ class _TopBar extends StatelessWidget {
     required this.sidebarOpen,
     required this.activeProject,
     required this.selectedProvider,
+    required this.selectedModel,
+    required this.selectedReasoningEffortId,
     required this.onToggleSidebar,
     required this.onSelectWorkspace,
     required this.onChooseModel,
+    required this.onSelectReasoningEffort,
     required this.onOpenAgents,
     required this.onOpenChanges,
   });
@@ -1804,9 +1840,12 @@ class _TopBar extends StatelessWidget {
   final bool sidebarOpen;
   final Project? activeProject;
   final ProviderProfile? selectedProvider;
+  final ModelProfile? selectedModel;
+  final String? selectedReasoningEffortId;
   final VoidCallback onToggleSidebar;
   final VoidCallback onSelectWorkspace;
   final VoidCallback onChooseModel;
+  final ValueChanged<String?> onSelectReasoningEffort;
   final VoidCallback onOpenAgents;
   final VoidCallback onOpenChanges;
 
@@ -1949,6 +1988,82 @@ class _TopBar extends StatelessWidget {
                   ),
                 ),
               ),
+              if (selectedModel?.reasoningEfforts.isNotEmpty == true)
+                PopupMenuButton<String>(
+                  key: const Key('model.effort.selector'),
+                  tooltip:
+                      'Reasoning effort: ${selectedReasoningEffortId == null ? 'Provider default' : _formatReasoningEffort(selectedReasoningEffortId!)}',
+                  onSelected: (value) => onSelectReasoningEffort(
+                    value == 'default'
+                        ? null
+                        : value.substring('effort:'.length),
+                  ),
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      key: const Key('model.effort.option.default'),
+                      value: 'default',
+                      child: _ReasoningEffortOption(
+                        label: 'Provider default',
+                        selected: selectedReasoningEffortId == null,
+                      ),
+                    ),
+                    for (final effort in selectedModel!.reasoningEfforts.keys)
+                      PopupMenuItem(
+                        key: Key('model.effort.option.${effort.toLowerCase()}'),
+                        value: 'effort:$effort',
+                        child: _ReasoningEffortOption(
+                          label: _formatReasoningEffort(effort),
+                          selected: selectedReasoningEffortId == effort,
+                        ),
+                      ),
+                  ],
+                  child: compact
+                      ? const SizedBox(
+                          width: 38,
+                          height: 38,
+                          child: Icon(AppIcons.modelReasoning, size: 19),
+                        )
+                      : Container(
+                          height: 38,
+                          constraints: const BoxConstraints(maxWidth: 190),
+                          margin: const EdgeInsets.only(left: 7),
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          decoration: BoxDecoration(
+                            color: AppColors.canvas,
+                            border: Border.all(color: AppColors.line),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(AppIcons.modelReasoning,
+                                  size: 15, color: AppColors.blue),
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Text(
+                                  selectedReasoningEffortId == null
+                                      ? 'Provider default'
+                                      : _formatReasoningEffort(
+                                          selectedReasoningEffortId!,
+                                        ),
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: AppColors.ink,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 3),
+                              const Icon(
+                                AppIcons.keyboardArrowDownRounded,
+                                size: 17,
+                                color: AppColors.muted,
+                              ),
+                            ],
+                          ),
+                        ),
+                ),
               if (compact)
                 PopupMenuButton<String>(
                   key: const Key('topbar.tools'),
@@ -2001,3 +2116,40 @@ class _TopBar extends StatelessWidget {
     );
   }
 }
+
+class _ReasoningEffortOption extends StatelessWidget {
+  const _ReasoningEffortOption({
+    required this.label,
+    required this.selected,
+  });
+
+  final String label;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          SizedBox(
+            width: 20,
+            child:
+                selected ? const Icon(AppIcons.checkRounded, size: 16) : null,
+          ),
+          Text(label),
+        ],
+      );
+}
+
+String _formatReasoningEffort(String id) => switch (id.toLowerCase()) {
+      'off' => 'Off',
+      'minimal' => 'Minimal',
+      'low' => 'Low',
+      'medium' => 'Medium',
+      'high' => 'High',
+      'xhigh' => 'Extra high',
+      'max' => 'Max',
+      _ => id
+          .split(RegExp(r'[-_ ]+'))
+          .where((part) => part.isNotEmpty)
+          .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+          .join(' '),
+    };

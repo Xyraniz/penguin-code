@@ -202,6 +202,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await _configureProvider(tester);
+    expect(find.byKey(const Key('model.effort.selector')), findsNothing);
     await tester.tap(find.byKey(const Key('model.selector')));
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -223,6 +224,17 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('Test provider · Fast model'), findsOneWidget);
+    expect(find.byKey(const Key('model.effort.selector')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('model.effort.selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('model.effort.option.max')));
+    await tester.pumpAndSettle();
+    expect(find.text('Max'), findsOneWidget);
+
+    await _selectDiscoveredModel(tester, 'test-model');
+    expect(find.byKey(const Key('model.effort.selector')), findsNothing);
+    await _selectDiscoveredModel(tester, 'fast-model');
+    expect(find.text('Max'), findsOneWidget);
 
     await _startProjectChat(tester);
     await tester.enterText(
@@ -235,6 +247,7 @@ void main() {
     final body =
         jsonDecode((sentRequest as http.Request).body) as Map<String, dynamic>;
     expect(body['model'], 'fast-model');
+    expect(body['reasoning_effort'], 'xhigh');
     expect(body.containsKey('tools'), isFalse);
     expect(find.text('Selected model reply'), findsOneWidget);
   });
@@ -636,6 +649,11 @@ http.StreamedResponse _modelsResponse() => http.StreamedResponse(
               'display_name': 'Fast model',
               'context_length': 32768,
               'supports_tools': false,
+              'reasoningEfforts': {
+                'off': null,
+                'low': 'low',
+                'max': 'xhigh',
+              },
             },
           ],
         })),

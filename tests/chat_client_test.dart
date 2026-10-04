@@ -25,9 +25,17 @@ void main() {
                   'input_modalities': ['text', 'image'],
                 },
                 'capabilities': {'tools': true, 'reasoning': true},
-                'reasoning_efforts': ['low', 'high'],
+                'reasoningEfforts': {
+                  'off': null,
+                  'low': 'low',
+                  'max': 'xhigh',
+                },
               },
-              {'id': 'text-only', 'supports_images': false},
+              {
+                'id': 'text-only',
+                'supports_images': false,
+                'supported_reasoning_efforts': ['high'],
+              },
               {'id': 'reasoner-v2'},
               {'id': ''},
             ],
@@ -50,9 +58,14 @@ void main() {
       expect(models.first.supportsImages, isTrue);
       expect(models.first.supportsTools, isTrue);
       expect(models.first.canReason, isTrue);
-      expect(models.first.reasoningEfforts, ['low', 'high']);
+      expect(models.first.reasoningEfforts, {
+        'off': null,
+        'low': 'low',
+        'max': 'xhigh',
+      });
       expect(models.last.supportsImages, isFalse);
       expect(models.last.supportsTools, isNull);
+      expect(models.last.reasoningEfforts, {'high': 'high'});
     });
 
     test('discovers models from a local provider without an API key', () async {
@@ -142,6 +155,64 @@ void main() {
         malformed.discoverModels(provider: _provider()),
         throwsA(isA<ChatConnectionException>()),
       );
+    });
+
+    test('maps only declared reasoning efforts to the provider request',
+        () async {
+      final requests = <http.BaseRequest>[];
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          requests.add(request);
+          return _response(
+            'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+          );
+        }),
+      );
+      final provider = _provider().copyWith(
+        models: const [
+          ModelProfile(
+            id: 'test-model',
+            reasoningEfforts: {'off': null, 'max': 'xhigh'},
+          ),
+        ],
+      );
+
+      await client
+          .streamEvents(
+            provider: provider,
+            history: const [],
+            abortTrigger: Completer<void>().future,
+            reasoningEffort: 'max',
+          )
+          .toList();
+      final maxBody = jsonDecode((requests.single as http.Request).body)
+          as Map<String, dynamic>;
+      expect(maxBody['reasoning_effort'], 'xhigh');
+
+      await client
+          .streamEvents(
+            provider: provider,
+            history: const [],
+            abortTrigger: Completer<void>().future,
+            reasoningEffort: 'off',
+          )
+          .toList();
+      final offBody = jsonDecode((requests.last as http.Request).body)
+          as Map<String, dynamic>;
+      expect(offBody.containsKey('reasoning_effort'), isFalse);
+
+      await expectLater(
+        client
+            .streamEvents(
+              provider: provider,
+              history: const [],
+              abortTrigger: Completer<void>().future,
+              reasoningEffort: 'high',
+            )
+            .toList(),
+        throwsA(isA<ChatConnectionException>()),
+      );
+      expect(requests, hasLength(2));
     });
 
     test('sends chat history and decodes streamed SSE across byte chunks',

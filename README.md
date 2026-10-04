@@ -18,6 +18,7 @@ Penguin Code is an early native desktop prototype with a working text chat for O
 - Searchable model selection grouped by provider
 - Model discovery and refresh through OpenAI-compatible `/models` endpoints
 - Provider-reported context and capability metadata in the model picker
+- Model-specific reasoning effort selection with provider wire-value mapping
 - Streaming chat composer with stop and retry controls
 - Explicit project file attachments for chat context
 - Project access selector with chat-only, per-action approval, and automatic read modes
@@ -27,7 +28,7 @@ Penguin Code is an early native desktop prototype with a working text chat for O
 - Subagent task queue preview
 - Change review, tool permission, appearance, and shortcut screens
 
-Projects, chats, messages, provider profiles, API keys, and the project access mode stay in memory for the current session. Messages are sent to the selected provider's `/chat/completions` endpoint as a streaming request. Model discovery uses the provider's `/models` endpoint when available; the model entered in the profile remains selectable when discovery is unavailable. Metadata such as context size and tool, image, or reasoning capabilities is shown only when the provider returns it. Use an HTTPS URL for remote providers; unencrypted HTTP is allowed only for loopback addresses such as `localhost` and `127.0.0.1`. The API key is optional for providers that do not require authentication. Project tools require OpenAI-compatible tool calling and are not sent to a model explicitly marked as unsupported.
+Projects, chats, messages, provider profiles, API keys, and the project access mode stay in memory for the current session. Messages are sent to the selected provider's `/chat/completions` endpoint as a streaming request. Model discovery uses the provider's `/models` endpoint when available; the model entered in the profile remains selectable when discovery is unavailable. Metadata such as context size and tool, image, or reasoning capabilities is shown only when the provider returns it. Reasoning effort choices appear only when a model declares supported levels; the selected level is mapped to the provider's `reasoning_effort` value, and **Provider default** leaves that field unset. Use an HTTPS URL for remote providers; unencrypted HTTP is allowed only for loopback addresses such as `localhost` and `127.0.0.1`. The API key is optional for providers that do not require authentication. Project tools require OpenAI-compatible tool calling and are not sent to a model explicitly marked as unsupported.
 
 Project access can be set to **Chat only**, **Ask before every action**, or **Auto-approve project reads**. When enabled, the model can list folders, search text, and read supported files inside the selected project. Every action in approval mode appears in chat before it runs. Reads reject paths outside the project, symbolic links, generated folders, unsupported files, and common credential or private-key files. Tool output and search work are bounded. These tools do not edit files or run commands.
 
@@ -35,7 +36,7 @@ You can also attach up to four source or text files per message, with a 64 KiB l
 
 ## Configure a provider
 
-Open **Settings → Models → Add provider** and enter the provider name, base URL, model identifier, and optional API key. For example, a local server can use `http://127.0.0.1:11434/v1` and a remote service should use its HTTPS base URL. Penguin Code discovers the endpoint's models after saving; use **Refresh models** in settings to update the list. The model picker in the top bar searches models by name or provider and displays provider-reported metadata. Select a model, create a chat for a project, and send a message. If model discovery is unsupported, the manually entered model remains available.
+Open **Settings → Models → Add provider** and enter the provider name, base URL, model identifier, and optional API key. For example, a local server can use `http://127.0.0.1:11434/v1` and a remote service should use its HTTPS base URL. Penguin Code discovers the endpoint's models after saving; use **Refresh models** in settings to update the list. The model picker in the top bar searches models by name or provider and displays provider-reported metadata. When the selected model declares reasoning levels, use the adjacent effort menu to choose one; selections are kept per model for the current session. Select a model, create a chat for a project, and send a message. If model discovery is unsupported, the manually entered model remains available.
 
 ## Run the desktop app
 

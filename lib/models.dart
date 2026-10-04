@@ -95,7 +95,7 @@ class ModelProfile {
     this.supportsImages,
     this.supportsTools,
     this.canReason,
-    this.reasoningEfforts = const [],
+    this.reasoningEfforts = const {},
   });
 
   final String id;
@@ -105,7 +105,10 @@ class ModelProfile {
   final bool? supportsImages;
   final bool? supportsTools;
   final bool? canReason;
-  final List<String> reasoningEfforts;
+
+  /// Selectable reasoning level -> value sent as `reasoning_effort`.
+  /// A null value means the level is represented by omitting that field.
+  final Map<String, String?> reasoningEfforts;
 
   String get displayName => name.isEmpty ? id : name;
 }
