@@ -10,7 +10,12 @@ class ChatScreen extends StatefulWidget {
     required this.title,
     required this.project,
     required this.hasModel,
+    required this.messages,
+    required this.isGenerating,
+    required this.providerLabel,
     required this.onSend,
+    required this.onStop,
+    required this.onRetry,
     required this.onChooseProject,
     required this.onCreateProject,
     required this.onNewChat,
@@ -22,7 +27,12 @@ class ChatScreen extends StatefulWidget {
   final String? title;
   final Project? project;
   final bool hasModel;
-  final ValueChanged<String> onSend;
+  final List<ChatMessage> messages;
+  final bool isGenerating;
+  final String? providerLabel;
+  final bool Function(String) onSend;
+  final VoidCallback onStop;
+  final ValueChanged<String> onRetry;
   final VoidCallback onChooseProject;
   final Future<Project?> Function() onCreateProject;
   final VoidCallback onNewChat;
@@ -47,7 +57,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _send() {
     final prompt = _controller.text.trim();
-    if (prompt.isNotEmpty) widget.onSend(prompt);
+    if (prompt.isNotEmpty && widget.onSend(prompt)) {
+      _controller.clear();
+    }
   }
 
   void _useSuggestion(String value) {
@@ -93,6 +105,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   onNewChat: widget.onNewChat,
                   onConfigureModels: widget.onConfigureModels,
                 )
+              else if (widget.messages.isNotEmpty)
+                _MessageTimeline(
+                  messages: widget.messages,
+                  onRetry: widget.onRetry,
+                )
               else
                 _ConversationPlaceholder(
                   title: widget.title!,
@@ -108,7 +125,10 @@ class _ChatScreenState extends State<ChatScreen> {
           controller: _controller,
           focusNode: _focusNode,
           onSend: _send,
+          onStop: widget.onStop,
           enabled: widget.project != null,
+          isGenerating: widget.isGenerating,
+          providerLabel: widget.providerLabel,
           onAttachment: () => _showNotice(
             context,
             'Attachments will be available when the agent is connected.',
@@ -228,24 +248,24 @@ class _EmptyChatWelcome extends StatelessWidget {
                       runSpacing: 9,
                       children: [
                         _SuggestionChip(
-                          icon: AppIcons.searchRounded,
-                          label: 'Explore the project',
+                          icon: AppIcons.autoAwesomeOutlined,
+                          label: 'Plan a feature',
                           onTap: () => onUseSuggestion(
-                            'Explore this project and explain its main parts.',
+                            'Help me plan a feature for this project: ',
                           ),
                         ),
                         _SuggestionChip(
                           icon: AppIcons.bugReportOutlined,
-                          label: 'Investigate an error',
+                          label: 'Understand an error',
                           onTap: () => onUseSuggestion(
-                            'Help me investigate this error: ',
+                            'Help me reason through this error: ',
                           ),
                         ),
                         _SuggestionChip(
                           icon: AppIcons.rateReviewOutlined,
-                          label: 'Review changes',
+                          label: 'Review a code snippet',
                           onTap: () => onUseSuggestion(
-                            'Review the pending changes and point out possible issues.',
+                            'Review this code snippet and point out possible issues: ',
                           ),
                         ),
                       ],
@@ -279,9 +299,12 @@ class _EmptyChatWelcome extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    const Text(
-                      'Folder access and agent execution are not connected in this preview.',
-                      style: TextStyle(color: AppColors.muted, fontSize: 11),
+                    Text(
+                      'Chat messages go to your selected provider. Files in ${project!.name} are not read or changed.',
+                      style: const TextStyle(
+                        color: AppColors.muted,
+                        fontSize: 11,
+                      ),
                     ),
                   ],
                 ],
@@ -405,13 +428,13 @@ class _ConversationPlaceholder extends StatelessWidget {
             const SizedBox(height: 16),
             Text(
               hasModel
-                  ? 'Agent execution is not connected in this preview.'
+                  ? 'Start the conversation.'
                   : 'Connect a model to get started.',
               style: Theme.of(context).textTheme.headlineMedium,
             ),
             const SizedBox(height: 8),
             const Text(
-              'This chat is linked to its project folder. File access is not enabled yet.',
+              'Messages are sent to the selected provider. Project files are not read or changed.',
               style: TextStyle(
                 color: AppColors.muted,
                 fontSize: 13,
@@ -446,14 +469,20 @@ class _Composer extends StatelessWidget {
     required this.controller,
     required this.focusNode,
     required this.onSend,
+    required this.onStop,
     required this.enabled,
+    required this.isGenerating,
+    required this.providerLabel,
     required this.onAttachment,
   });
 
   final TextEditingController controller;
   final FocusNode focusNode;
   final VoidCallback onSend;
+  final VoidCallback onStop;
   final bool enabled;
+  final bool isGenerating;
+  final String? providerLabel;
   final VoidCallback onAttachment;
 
   @override
@@ -498,7 +527,7 @@ class _Composer extends StatelessWidget {
                       onSubmitted: (_) => onSend(),
                       decoration: InputDecoration(
                         hintText: enabled
-                            ? 'Write a task for Penguin Code…'
+                            ? 'Message Penguin Code…'
                             : 'Choose a project to start a chat…',
                         filled: false,
                         border: InputBorder.none,
@@ -527,7 +556,7 @@ class _Composer extends StatelessWidget {
                         Flexible(
                           child: Text(
                             enabled
-                                ? 'Project folder attached · file access is not enabled yet.'
+                                ? 'Project selected · its files are not sent to the model.'
                                 : 'Select a project folder to begin.',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -538,29 +567,42 @@ class _Composer extends StatelessWidget {
                           ),
                         ),
                         const Spacer(),
-                        const Text(
-                          'Enter to send',
-                          style: TextStyle(
-                            color: AppColors.muted,
-                            fontSize: 10,
-                          ),
-                        ),
-                        const SizedBox(width: 9),
-                        FilledButton(
-                          key: const Key('composer.send'),
-                          onPressed: enabled ? onSend : null,
-                          style: FilledButton.styleFrom(
-                            minimumSize: const Size(38, 36),
-                            padding: EdgeInsets.zero,
-                            backgroundColor: AppColors.blue,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(11),
+                        if (!isGenerating)
+                          const Text(
+                            'Enter to send',
+                            style: TextStyle(
+                              color: AppColors.muted,
+                              fontSize: 10,
                             ),
                           ),
-                          child: const Icon(
-                            AppIcons.arrowUpwardRounded,
-                            size: 19,
+                        const SizedBox(width: 9),
+                        Tooltip(
+                          message:
+                              isGenerating ? 'Stop generating' : 'Send message',
+                          child: FilledButton(
+                            key: Key(
+                              isGenerating ? 'composer.stop' : 'composer.send',
+                            ),
+                            onPressed: !enabled
+                                ? null
+                                : isGenerating
+                                    ? onStop
+                                    : onSend,
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size(38, 36),
+                              padding: EdgeInsets.zero,
+                              backgroundColor: AppColors.blue,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(11),
+                              ),
+                            ),
+                            child: Icon(
+                              isGenerating
+                                  ? AppIcons.stopRounded
+                                  : AppIcons.arrowUpwardRounded,
+                              size: 19,
+                            ),
                           ),
                         ),
                       ],
@@ -569,13 +611,169 @@ class _Composer extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 8),
-              const Text(
-                'Design preview · messages are not sent to a model',
-                style: TextStyle(color: AppColors.muted, fontSize: 10),
+              Text(
+                providerLabel == null
+                    ? 'Choose a provider to send messages.'
+                    : 'Connected to $providerLabel · project files are not accessed.',
+                style: const TextStyle(color: AppColors.muted, fontSize: 10),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _MessageTimeline extends StatefulWidget {
+  const _MessageTimeline({required this.messages, required this.onRetry});
+
+  final List<ChatMessage> messages;
+  final ValueChanged<String> onRetry;
+
+  @override
+  State<_MessageTimeline> createState() => _MessageTimelineState();
+}
+
+class _MessageTimelineState extends State<_MessageTimeline> {
+  final _scrollController = ScrollController();
+
+  @override
+  void didUpdateWidget(covariant _MessageTimeline oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 900),
+        child: ListView.separated(
+          key: const Key('chat.messages'),
+          controller: _scrollController,
+          padding: const EdgeInsets.fromLTRB(24, 26, 24, 32),
+          itemCount: widget.messages.length,
+          separatorBuilder: (context, index) => const SizedBox(height: 18),
+          itemBuilder: (context, index) {
+            final message = widget.messages[index];
+            final user = message.role == ChatMessageRole.user;
+            return Align(
+              alignment: user ? Alignment.centerRight : Alignment.centerLeft,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 720),
+                child: Column(
+                  crossAxisAlignment:
+                      user ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding:
+                          const EdgeInsets.only(bottom: 6, left: 3, right: 3),
+                      child: Text(
+                        user ? 'You' : 'Penguin Code',
+                        style: const TextStyle(
+                          color: AppColors.blueDeep,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: user
+                            ? AppColors.blue.withValues(alpha: 0.96)
+                            : Colors.white.withValues(alpha: 0.96),
+                        borderRadius: BorderRadius.circular(17),
+                        border: user ? null : Border.all(color: AppColors.line),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x0C174465),
+                            blurRadius: 16,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: SelectableText(
+                        message.content.isEmpty &&
+                                message.status == ChatMessageStatus.streaming
+                            ? 'Thinking…'
+                            : message.content,
+                        key: Key('chat.message.${message.id}'),
+                        style: TextStyle(
+                          color: user ? Colors.white : AppColors.ink,
+                          fontSize: 13,
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                    if (!user && message.status == ChatMessageStatus.stopped)
+                      const _MessageStatus(label: 'Response stopped')
+                    else if (!user &&
+                        message.status == ChatMessageStatus.failed)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 7),
+                        child: Wrap(
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 8,
+                          children: [
+                            Text(
+                              message.error ?? 'The response failed.',
+                              style: const TextStyle(
+                                color: AppColors.danger,
+                                fontSize: 11,
+                              ),
+                            ),
+                            TextButton.icon(
+                              key: Key('chat.retry.${message.id}'),
+                              onPressed: () => widget.onRetry(message.id),
+                              icon:
+                                  const Icon(AppIcons.refreshRounded, size: 15),
+                              label: const Text('Retry'),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _MessageStatus extends StatelessWidget {
+  const _MessageStatus({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 7, left: 3),
+      child: Text(
+        label,
+        style: const TextStyle(color: AppColors.muted, fontSize: 10),
       ),
     );
   }

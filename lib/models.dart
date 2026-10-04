@@ -2,6 +2,10 @@ enum AppPage { chat, agents, changes, settings }
 
 enum SettingsTab { general, models, tools, shortcuts }
 
+enum ChatMessageRole { user, assistant }
+
+enum ChatMessageStatus { streaming, complete, stopped, failed }
+
 class ProviderProfile {
   const ProviderProfile({
     required this.id,
@@ -9,6 +13,7 @@ class ProviderProfile {
     required this.model,
     required this.endpoint,
     required this.onDevice,
+    this.apiKey,
   });
 
   final String id;
@@ -16,8 +21,25 @@ class ProviderProfile {
   final String model;
   final String endpoint;
   final bool onDevice;
+  final String? apiKey;
 
   String get routeLabel => '$name · $model';
+}
+
+class ChatMessage {
+  const ChatMessage({
+    required this.id,
+    required this.role,
+    required this.content,
+    required this.status,
+    this.error,
+  });
+
+  final String id;
+  final ChatMessageRole role;
+  final String content;
+  final ChatMessageStatus status;
+  final String? error;
 }
 
 class AgentTask {

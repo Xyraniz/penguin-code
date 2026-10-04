@@ -14,6 +14,7 @@ abstract final class AppColors {
   static const green = Color(0xFF32876B);
   static const amber = Color(0xFFAD741D);
   static const red = Color(0xFFB84B55);
+  static const danger = red;
 }
 
 ThemeData buildAppTheme() {

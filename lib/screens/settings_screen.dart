@@ -302,7 +302,7 @@ class _ModelSettings extends StatelessWidget {
               SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Design preview: profiles stay in memory for this session only. Keys are not saved or sent.',
+                  'Provider profiles, API keys, and chat messages stay in memory for this session. Messages are sent to the configured provider.',
                   style: TextStyle(
                     color: AppColors.ink,
                     fontSize: 12.5,
@@ -358,8 +358,8 @@ class _ModelSettings extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       const _StatusTag(
-                        label: 'Preview',
-                        color: AppColors.amber,
+                        label: 'Configured',
+                        color: AppColors.green,
                       ),
                       const SizedBox(width: 7),
                       IconButton(
@@ -461,6 +461,7 @@ class _ProviderDialogState extends State<_ProviderDialog> {
         model: model,
         endpoint: endpoint,
         onDevice: _onDevice,
+        apiKey: _apiKey.text.trim().isEmpty ? null : _apiKey.text.trim(),
       ),
     );
   }
@@ -481,7 +482,7 @@ class _ProviderDialogState extends State<_ProviderDialog> {
                 const Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Set up a connection preview. Nothing is saved or sent.',
+                    'Configure an OpenAI-compatible chat endpoint. Profiles and keys are kept in memory for this session.',
                     style: TextStyle(
                       color: AppColors.muted,
                       fontSize: 12.5,
@@ -521,7 +522,7 @@ class _ProviderDialogState extends State<_ProviderDialog> {
                   controller: _apiKey,
                   obscureText: true,
                   decoration: const InputDecoration(
-                    labelText: 'API key (optional in this preview)',
+                    labelText: 'API key (optional)',
                     prefixIcon: Icon(AppIcons.keyOutlined),
                   ),
                 ),
@@ -548,7 +549,7 @@ class _ProviderDialogState extends State<_ProviderDialog> {
         FilledButton(
           key: const Key('provider.save'),
           onPressed: _save,
-          child: const Text('Save preview'),
+          child: const Text('Save profile'),
         ),
       ],
     );

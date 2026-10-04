@@ -8,19 +8,26 @@ Penguin Code is a native desktop interface concept for a coding agent. It uses F
 
 ## Current scope
 
-This early prototype focuses on the application shell and its interaction design:
+Penguin Code is an early native desktop prototype with a working text chat for OpenAI-compatible Chat Completions providers:
 
 - Collapsible conversation history and chat actions
 - Project folders selected through the operating system's folder picker
 - Project selection every time a new chat is created
 - Recent project switching and chat-to-project association
 - Lucide outline icons throughout the application
-- Provider and model selection previews
-- Chat composer and task suggestions
+- Provider and model selection
+- Streaming chat composer with stop and retry controls
+- Session-only chat history and provider profiles
 - Subagent task queue preview
 - Change review, tool permission, appearance, and shortcut screens
 
-Projects and chats only live for the current session. Selecting a folder records it as a chat's intended working directory, but the app does not read or change its files yet. Model profiles, prompt delivery, delegated work, and tool permissions are still previews without an agent runtime. Provider profiles stay in memory for this session, and prompts are not sent anywhere.
+Projects, chats, messages, provider profiles, and API keys stay in memory for the current session. Messages are sent to the selected provider's `/chat/completions` endpoint as a streaming request. Use an HTTPS URL for remote providers; unencrypted HTTP is allowed only for loopback addresses such as `localhost` and `127.0.0.1`. The API key is optional for providers that do not require authentication.
+
+Selecting a project folder records the intended workspace, but chat does not read, write, or execute project files. Subagent execution, tools, attachments, and change review remain interface previews.
+
+## Configure a provider
+
+Open **Settings → Models → Add provider** and enter the provider name, base URL, model identifier, and optional API key. For example, a local server can use `http://127.0.0.1:11434/v1` and a remote service should use its HTTPS base URL. Select the configured provider in the top bar, create a chat for a project, and send a message.
 
 ## Run the desktop app
 
@@ -39,4 +46,4 @@ Use `-d macos` or `-d linux` on the matching development platform. Flutter can t
 flutter test tests
 ```
 
-The tests cover project selection for new chats, conversation history, provider setup preview, and the subagent and changes screens.
+The tests cover the app shell, session-only provider setup, request formatting, streaming responses, endpoint validation, cancellation, and chat interaction using fake HTTP responses. No live API key or provider is required.

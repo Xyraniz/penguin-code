@@ -36,9 +36,11 @@ abstract final class AppIcons {
   static const settingsOutlined = LucideIcons.settings;
   static const shieldOutlined = LucideIcons.shield;
   static const smartToyOutlined = LucideIcons.bot;
+  static const stopRounded = LucideIcons.squareStop;
   static const sourceOutlined = LucideIcons.gitBranch;
   static const terminalRounded = LucideIcons.terminal;
   static const tuneRounded = LucideIcons.slidersHorizontal;
+  static const refreshRounded = LucideIcons.rotateCcw;
 
   static const folderPlus = LucideIcons.folderPlus;
 }

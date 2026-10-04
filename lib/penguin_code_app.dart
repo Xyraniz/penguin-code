@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -6,15 +7,21 @@ import 'package:flutter/services.dart';
 
 import 'app_theme.dart';
 import 'models.dart';
+import 'services/openai_compatible_chat_client.dart';
 import 'screens/app_screens.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/app_icons.dart';
 import 'widgets/penguin_mark.dart';
 
 class PenguinCodeApp extends StatelessWidget {
-  const PenguinCodeApp({super.key, this.initialProjects = const []});
+  const PenguinCodeApp({
+    super.key,
+    this.initialProjects = const [],
+    this.chatClient,
+  });
 
   final List<Project> initialProjects;
+  final OpenAiCompatibleChatClient? chatClient;
 
   @override
   Widget build(BuildContext context) {
@@ -22,15 +29,23 @@ class PenguinCodeApp extends StatelessWidget {
       title: 'Penguin Code',
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
-      home: PenguinHomeShell(initialProjects: initialProjects),
+      home: PenguinHomeShell(
+        initialProjects: initialProjects,
+        chatClient: chatClient,
+      ),
     );
   }
 }
 
 class PenguinHomeShell extends StatefulWidget {
-  const PenguinHomeShell({super.key, this.initialProjects = const []});
+  const PenguinHomeShell({
+    super.key,
+    this.initialProjects = const [],
+    this.chatClient,
+  });
 
   final List<Project> initialProjects;
+  final OpenAiCompatibleChatClient? chatClient;
 
   @override
   State<PenguinHomeShell> createState() => _PenguinHomeShellState();
@@ -45,6 +60,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final List<ChatConversation> _chats = [];
   final List<ProviderProfile> _providers = [];
   final List<AgentTask> _agentTasks = [];
+  final Map<String, List<ChatMessage>> _messagesByChatId = {};
+  final Map<String, Completer<void>> _generationStops = {};
+  late final OpenAiCompatibleChatClient _chatClient;
+  int _messageId = 0;
   String? _activeChatId;
   String? _activeProjectId;
   String? _selectedModelId;
@@ -53,6 +72,16 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   void initState() {
     super.initState();
     _projects.addAll(widget.initialProjects);
+    _chatClient = widget.chatClient ?? OpenAiCompatibleChatClient();
+  }
+
+  @override
+  void dispose() {
+    for (final stop in _generationStops.values) {
+      if (!stop.isCompleted) stop.complete();
+    }
+    _chatClient.close();
+    super.dispose();
   }
 
   Project? get _activeProject {
@@ -249,8 +278,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       ),
     );
     if (accepted != true || !mounted) return;
+    _stopGeneration(chatId);
     setState(() {
       _chats.removeWhere((item) => item.id == chatId);
+      _messagesByChatId.remove(chatId);
       if (_activeChatId == chatId) _activeChatId = null;
     });
   }
@@ -263,7 +294,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       _page = AppPage.chat;
     });
     _showNotice(
-      'Preview profile saved for this session. No connection was made.',
+      'Provider profile saved for this session.',
     );
   }
 
@@ -279,19 +310,242 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     });
   }
 
-  void _submitPrompt(String value) {
+  bool _submitPrompt(String value) {
     final project = _activeProject;
     if (project == null) {
       _showNotice('Choose a project before starting a chat.');
-      return;
+      return false;
+    }
+    final provider = _selectedProvider;
+    if (provider == null) {
+      _showNotice('Choose or add a provider before sending a message.');
+      return false;
+    }
+    try {
+      _chatClient.validateProvider(provider);
+    } on ChatConnectionException catch (error) {
+      _showNotice(error.message);
+      return false;
+    }
+    if (_activeChatId != null && _generationStops.containsKey(_activeChatId)) {
+      _showNotice(
+          'Wait for the current response to stop before sending again.');
+      return false;
     }
     if (_activeChatId == null) _startChat(project);
-    if (_selectedProvider == null) {
-      _showNotice('Add a model profile before sending this task.');
+    final chatId = _activeChatId!;
+    final existingMessages = _messagesByChatId[chatId] ?? const <ChatMessage>[];
+    final userMessage = ChatMessage(
+      id: _newMessageId(),
+      role: ChatMessageRole.user,
+      content: value,
+      status: ChatMessageStatus.complete,
+    );
+    final assistantMessage = ChatMessage(
+      id: _newMessageId(),
+      role: ChatMessageRole.assistant,
+      content: '',
+      status: ChatMessageStatus.streaming,
+    );
+    final history = [
+      ...existingMessages.where(
+        (message) =>
+            message.status != ChatMessageStatus.failed &&
+            (message.content.isNotEmpty ||
+                message.role == ChatMessageRole.user),
+      ),
+      userMessage,
+    ];
+    final stop = Completer<void>();
+    setState(() {
+      _messagesByChatId[chatId] = [
+        ...existingMessages,
+        userMessage,
+        assistantMessage,
+      ];
+      _generationStops[chatId] = stop;
+      final chatIndex = _chats.indexWhere((chat) => chat.id == chatId);
+      if (chatIndex >= 0 && _chats[chatIndex].title == 'New chat') {
+        _chats[chatIndex] = _chats[chatIndex].copyWith(
+          title: value.length <= 36 ? value : '${value.substring(0, 33)}…',
+        );
+      }
+    });
+    unawaited(
+      _streamAssistant(
+        chatId: chatId,
+        assistantMessageId: assistantMessage.id,
+        provider: provider,
+        history: history,
+        stop: stop,
+      ),
+    );
+    return true;
+  }
+
+  String _newMessageId() =>
+      '${DateTime.now().microsecondsSinceEpoch}-${_messageId++}';
+
+  Future<void> _streamAssistant({
+    required String chatId,
+    required String assistantMessageId,
+    required ProviderProfile provider,
+    required List<ChatMessage> history,
+    required Completer<void> stop,
+  }) async {
+    try {
+      await for (final text in _chatClient.streamCompletion(
+        provider: provider,
+        history: history,
+        abortTrigger: stop.future,
+      )) {
+        if (!mounted) return;
+        _updateChatMessage(
+          chatId,
+          assistantMessageId,
+          (message) => ChatMessage(
+            id: message.id,
+            role: message.role,
+            content: message.content + text,
+            status: ChatMessageStatus.streaming,
+          ),
+        );
+      }
+      if (!mounted) return;
+      _updateChatMessage(
+        chatId,
+        assistantMessageId,
+        (message) => ChatMessage(
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          status: stop.isCompleted
+              ? ChatMessageStatus.stopped
+              : ChatMessageStatus.complete,
+        ),
+      );
+    } on ChatConnectionException catch (error) {
+      if (!mounted || stop.isCompleted) return;
+      _updateChatMessage(
+        chatId,
+        assistantMessageId,
+        (message) => ChatMessage(
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          status: ChatMessageStatus.failed,
+          error: error.message,
+        ),
+      );
+    } catch (_) {
+      if (!mounted || stop.isCompleted) return;
+      _updateChatMessage(
+        chatId,
+        assistantMessageId,
+        (message) => ChatMessage(
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          status: ChatMessageStatus.failed,
+          error:
+              'The response could not be read. Check the provider and try again.',
+        ),
+      );
+    } finally {
+      if (identical(_generationStops[chatId], stop)) {
+        _generationStops.remove(chatId);
+        if (mounted) setState(() {});
+      }
+    }
+  }
+
+  void _updateChatMessage(
+    String chatId,
+    String messageId,
+    ChatMessage Function(ChatMessage) update,
+  ) {
+    final messages = _messagesByChatId[chatId];
+    if (messages == null) return;
+    final index = messages.indexWhere((message) => message.id == messageId);
+    if (index < 0) return;
+    setState(() => messages[index] = update(messages[index]));
+  }
+
+  void _stopGeneration(String chatId) {
+    final stop = _generationStops[chatId];
+    if (stop == null) return;
+    if (!stop.isCompleted) stop.complete();
+    final messages = _messagesByChatId[chatId];
+    if (messages == null) return;
+    final activeIndex = messages.lastIndexWhere(
+      (message) =>
+          message.role == ChatMessageRole.assistant &&
+          message.status == ChatMessageStatus.streaming,
+    );
+    if (activeIndex < 0) return;
+    final message = messages[activeIndex];
+    _updateChatMessage(
+      chatId,
+      message.id,
+      (current) => ChatMessage(
+        id: current.id,
+        role: current.role,
+        content: current.content,
+        status: ChatMessageStatus.stopped,
+      ),
+    );
+  }
+
+  void _retryAssistant(String chatId, String assistantMessageId) {
+    final provider = _selectedProvider;
+    if (provider == null) {
+      _showNotice('Choose or add a provider before retrying.');
       return;
     }
-    _showNotice(
-        'Agent execution is not connected yet. This task was not sent.');
+    try {
+      _chatClient.validateProvider(provider);
+    } on ChatConnectionException catch (error) {
+      _showNotice(error.message);
+      return;
+    }
+    if (_generationStops.containsKey(chatId)) {
+      _showNotice('Wait for the current response to stop before retrying.');
+      return;
+    }
+    final messages = _messagesByChatId[chatId];
+    if (messages == null) return;
+    final assistantIndex = messages.indexWhere(
+      (message) => message.id == assistantMessageId,
+    );
+    if (assistantIndex < 1) return;
+    final previousMessages = messages.take(assistantIndex).toList();
+    final history = previousMessages
+        .where(
+          (message) =>
+              message.status != ChatMessageStatus.failed &&
+              (message.content.isNotEmpty ||
+                  message.role == ChatMessageRole.user),
+        )
+        .toList(growable: false);
+    final stop = Completer<void>();
+    setState(() {
+      messages[assistantIndex] = ChatMessage(
+        id: assistantMessageId,
+        role: ChatMessageRole.assistant,
+        content: '',
+        status: ChatMessageStatus.streaming,
+      );
+      _generationStops[chatId] = stop;
+    });
+    unawaited(
+      _streamAssistant(
+        chatId: chatId,
+        assistantMessageId: assistantMessageId,
+        provider: provider,
+        history: history,
+        stop: stop,
+      ),
+    );
   }
 
   void _addAgentTask(String prompt) {
@@ -370,7 +624,26 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                   title: _activeChat?.title,
                                   project: _activeProject,
                                   hasModel: _selectedProvider != null,
+                                  messages: _activeChatId == null
+                                      ? const []
+                                      : _messagesByChatId[_activeChatId] ??
+                                          const [],
+                                  isGenerating: _activeChatId != null &&
+                                      (_messagesByChatId[_activeChatId]?.any(
+                                            (message) =>
+                                                message.role ==
+                                                    ChatMessageRole.assistant &&
+                                                message.status ==
+                                                    ChatMessageStatus.streaming,
+                                          ) ??
+                                          false),
+                                  providerLabel: _selectedProvider?.routeLabel,
                                   onSend: _submitPrompt,
+                                  onStop: () => _stopGeneration(_activeChatId!),
+                                  onRetry: (messageId) => _retryAssistant(
+                                    _activeChatId!,
+                                    messageId,
+                                  ),
                                   onChooseProject: _chooseProject,
                                   onCreateProject: _createProjectFromFolder,
                                   onNewChat: _createChat,
