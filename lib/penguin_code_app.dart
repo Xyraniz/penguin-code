@@ -127,8 +127,11 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   String _normalizePath(String path) =>
       Platform.isWindows ? path.replaceAll('/', r'\').toLowerCase() : path;
 
-  String _projectNameFromPath(String path) =>
-      path.split(RegExp(r'[\\/]')).where((part) => part.isNotEmpty).last;
+  String _projectNameFromPath(String path) {
+    final segments =
+        path.split(RegExp(r'[\\/]')).where((part) => part.isNotEmpty).toList();
+    return segments.isEmpty ? 'Root' : segments.last;
+  }
 
   Future<Project?> _createProjectFromFolder() async {
     final path = await getDirectoryPath(

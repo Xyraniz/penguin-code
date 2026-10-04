@@ -54,7 +54,38 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Recent chats'), findsNothing);
     expect(find.text('No messages'), findsOneWidget);
+    expect(
+      find.text(
+        'Only files you attach are read and sent to your selected provider. Other project files are not accessed or changed.',
+      ),
+      findsOneWidget,
+    );
     expect(find.text(r'C:\Projects\penguin-code'), findsOneWidget);
+  });
+
+  testWidgets('creates a project from a filesystem root folder', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    const fileSelectorChannel =
+        MethodChannel('plugins.flutter.io/file_selector');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      fileSelectorChannel,
+      (call) async => '/',
+    );
+    addTearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(fileSelectorChannel, null);
+    });
+    await tester.pumpWidget(const PenguinCodeApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('home.project.create')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Root'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('supports conversation shortcuts, rename, and search', (

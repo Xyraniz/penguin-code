@@ -146,6 +146,96 @@ void main() {
       expect(messages.single['content'], isNot(contains('C:\\Users\\')));
     });
 
+    test('keeps request context within the limit using recent user turns',
+        () async {
+      late http.BaseRequest sentRequest;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          sentRequest = request;
+          return _response(
+              'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n');
+        }),
+      );
+
+      await client
+          .streamCompletion(
+            provider: _provider(),
+            history: [
+              ChatMessage(
+                id: 'old-user',
+                role: ChatMessageRole.user,
+                content: 'x' * OpenAiCompatibleChatClient.maxRequestBodyBytes,
+                status: ChatMessageStatus.complete,
+              ),
+              const ChatMessage(
+                id: 'old-assistant',
+                role: ChatMessageRole.assistant,
+                content: 'Older answer',
+                status: ChatMessageStatus.complete,
+              ),
+              const ChatMessage(
+                id: 'latest-user',
+                role: ChatMessageRole.user,
+                content: 'Current question',
+                status: ChatMessageStatus.complete,
+              ),
+              const ChatMessage(
+                id: 'streaming-placeholder',
+                role: ChatMessageRole.assistant,
+                content: '',
+                status: ChatMessageStatus.streaming,
+              ),
+            ],
+            abortTrigger: Completer<void>().future,
+          )
+          .toList();
+
+      final body = jsonDecode((sentRequest as http.Request).body)
+          as Map<String, dynamic>;
+      expect(body['messages'], [
+        {'role': 'user', 'content': 'Current question'},
+      ]);
+      expect(utf8.encode((sentRequest as http.Request).body).length,
+          lessThanOrEqualTo(OpenAiCompatibleChatClient.maxRequestBodyBytes));
+    });
+
+    test('rejects a single message larger than the request limit', () async {
+      var requestSent = false;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          requestSent = true;
+          return _response(
+              'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n');
+        }),
+      );
+
+      await expectLater(
+        client
+            .streamCompletion(
+              provider: _provider(),
+              history: [
+                ChatMessage(
+                  id: 'oversized-user',
+                  role: ChatMessageRole.user,
+                  content: 'x' *
+                      (OpenAiCompatibleChatClient.maxRequestBodyBytes + 1),
+                  status: ChatMessageStatus.complete,
+                ),
+              ],
+              abortTrigger: Completer<void>().future,
+            )
+            .toList(),
+        throwsA(
+          isA<ChatConnectionException>().having(
+            (error) => error.message,
+            'message',
+            contains('384 KiB request limit'),
+          ),
+        ),
+      );
+      expect(requestSent, isFalse);
+    });
+
     test('rejects non-HTTPS remote endpoints before making a request',
         () async {
       var requestSent = false;

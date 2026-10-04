@@ -352,8 +352,8 @@ class _EmptyChatWelcome extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    Text(
-                      'Chat messages go to your selected provider. Files in ${project!.name} are not read or changed.',
+                    const Text(
+                      'Only files you attach are read and sent to your selected provider. Other project files are not accessed or changed.',
                       style: const TextStyle(
                         color: AppColors.muted,
                         fontSize: 11,
@@ -487,7 +487,7 @@ class _ConversationPlaceholder extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Messages are sent to the selected provider. Project files are not read or changed.',
+              'Only files you attach are read and sent to your selected provider. Other project files are not accessed or changed.',
               style: TextStyle(
                 color: AppColors.muted,
                 fontSize: 13,

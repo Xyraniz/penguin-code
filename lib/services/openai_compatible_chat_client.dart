@@ -16,6 +16,8 @@ class ChatConnectionException implements Exception {
 }
 
 class OpenAiCompatibleChatClient {
+  static const maxRequestBodyBytes = 384 * 1024;
+
   OpenAiCompatibleChatClient({http.Client? client})
       : _client = client ?? http.Client(),
         _ownsClient = client == null;
@@ -47,17 +49,40 @@ class OpenAiCompatibleChatClient {
     if (apiKey != null && apiKey.isNotEmpty) {
       request.headers['Authorization'] = 'Bearer $apiKey';
     }
-    request.body = jsonEncode({
-      'model': provider.model,
-      'stream': true,
-      'messages': [
-        for (final message in history)
+    final messages = [
+      for (final message in history)
+        if (message.role != ChatMessageRole.assistant ||
+            message.content.isNotEmpty ||
+            message.attachments.isNotEmpty)
           {
             'role': message.role == ChatMessageRole.user ? 'user' : 'assistant',
             'content': _messageContent(message),
           },
-      ],
-    });
+    ];
+    final requestBody = _requestBody(provider, const []);
+    final selectedMessages = <Map<String, String>>[];
+    var requestSize = utf8.encode(requestBody).length;
+    for (final message in messages.reversed) {
+      final messageSize = utf8.encode(jsonEncode(message)).length;
+      final separatorSize = selectedMessages.isEmpty ? 0 : 1;
+      if (requestSize + messageSize + separatorSize > maxRequestBodyBytes) {
+        if (selectedMessages.isEmpty) {
+          throw const ChatConnectionException(
+            'This message and its attachments exceed the 384 KiB request limit. Remove some text or attachments and try again.',
+          );
+        }
+        break;
+      }
+      requestSize += messageSize + separatorSize;
+      selectedMessages.add(message);
+    }
+
+    final boundedMessages = selectedMessages.reversed.toList();
+    if (boundedMessages.isNotEmpty &&
+        boundedMessages.first['role'] == 'assistant') {
+      boundedMessages.removeAt(0);
+    }
+    request.body = _requestBody(provider, boundedMessages);
 
     final http.StreamedResponse response;
     try {
@@ -138,6 +163,16 @@ class OpenAiCompatibleChatClient {
     }
   }
 
+  String _requestBody(
+    ProviderProfile provider,
+    List<Map<String, String>> messages,
+  ) =>
+      jsonEncode({
+        'model': provider.model,
+        'stream': true,
+        'messages': messages,
+      });
+
   String? _readEvent(List<String> dataLines) {
     if (dataLines.isEmpty) return '';
     final data = dataLines.join('\n');
@@ -160,12 +195,10 @@ class OpenAiCompatibleChatClient {
     if (message.attachments.isEmpty) return message.content;
     final attachedFiles = message.attachments
         .map(
-          (attachment) => jsonEncode({
-            'path': attachment.relativePath,
-            'content': attachment.content,
-          }),
+          (attachment) =>
+              'File ${jsonEncode(attachment.relativePath)}:\n${attachment.content}',
         )
-        .join('\n');
+        .join('\n\n');
     final userRequest = message.content.isEmpty
         ? 'The user attached files without a question. Ask what they would like help with.'
         : message.content;
