@@ -1,0 +1,44 @@
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+
+abstract final class AppIcons {
+  static const acUnitRounded = LucideIcons.snowflake;
+  static const addLinkRounded = LucideIcons.link;
+  static const addRounded = LucideIcons.plus;
+  static const arrowUpwardRounded = LucideIcons.arrowUp;
+  static const attachFileRounded = LucideIcons.paperclip;
+  static const autoAwesomeOutlined = LucideIcons.sparkles;
+  static const bugReportOutlined = LucideIcons.bug;
+  static const chatBubbleOutlineRounded = LucideIcons.messageSquare;
+  static const checkRounded = LucideIcons.check;
+  static const cloudOutlined = LucideIcons.cloud;
+  static const deleteOutlineRounded = LucideIcons.trash2;
+  static const devicesOutlined = LucideIcons.monitorSmartphone;
+  static const differenceOutlined = LucideIcons.fileDiff;
+  static const editNoteRounded = LucideIcons.filePenLine;
+  static const folderOpenRounded = LucideIcons.folderOpen;
+  static const hourglassEmptyRounded = LucideIcons.hourglass;
+  static const hubOutlined = LucideIcons.network;
+  static const infoOutlineRounded = LucideIcons.info;
+  static const keyOutlined = LucideIcons.keyRound;
+  static const keyboardArrowDownRounded = LucideIcons.chevronDown;
+  static const keyboardOutlined = LucideIcons.keyboard;
+  static const languageRounded = LucideIcons.languages;
+  static const lightModeOutlined = LucideIcons.sun;
+  static const linkOffRounded = LucideIcons.unlink;
+  static const menuOpenRounded = LucideIcons.panelLeftClose;
+  static const menuRounded = LucideIcons.panelLeft;
+  static const moreHorizRounded = LucideIcons.ellipsis;
+  static const personOutlineRounded = LucideIcons.userRound;
+  static const rateReviewOutlined = LucideIcons.squarePen;
+  static const removeRedEyeOutlined = LucideIcons.eye;
+  static const searchRounded = LucideIcons.search;
+  static const securityOutlined = LucideIcons.shieldAlert;
+  static const settingsOutlined = LucideIcons.settings;
+  static const shieldOutlined = LucideIcons.shield;
+  static const smartToyOutlined = LucideIcons.bot;
+  static const sourceOutlined = LucideIcons.gitBranch;
+  static const terminalRounded = LucideIcons.terminal;
+  static const tuneRounded = LucideIcons.slidersHorizontal;
+
+  static const folderPlus = LucideIcons.folderPlus;
+}

@@ -1,0 +1,10 @@
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.puro-version
+.idea/
+.vscode/
+build/
+coverage/
+*.iml
