@@ -51,6 +51,7 @@ class ProviderProfile {
     required this.endpoint,
     required this.onDevice,
     this.apiKey,
+    this.models = const [],
   });
 
   final String id;
@@ -59,8 +60,61 @@ class ProviderProfile {
   final String endpoint;
   final bool onDevice;
   final String? apiKey;
+  final List<ModelProfile> models;
 
-  String get routeLabel => '$name · $model';
+  String get routeLabel {
+    final selected = availableModels.where((item) => item.id == model);
+    final label = selected.isEmpty ? model : selected.first.displayName;
+    return '$name · $label';
+  }
+
+  List<ModelProfile> get availableModels {
+    if (model.isEmpty) return models;
+    if (models.any((item) => item.id == model)) return models;
+    return [ModelProfile(id: model), ...models];
+  }
+
+  ProviderProfile copyWith({String? model, List<ModelProfile>? models}) =>
+      ProviderProfile(
+        id: id,
+        name: name,
+        model: model ?? this.model,
+        endpoint: endpoint,
+        onDevice: onDevice,
+        apiKey: apiKey,
+        models: models ?? this.models,
+      );
+}
+
+class ModelProfile {
+  const ModelProfile({
+    required this.id,
+    this.name = '',
+    this.contextWindow,
+    this.maxOutputTokens,
+    this.supportsImages,
+    this.supportsTools,
+    this.canReason,
+    this.reasoningEfforts = const [],
+  });
+
+  final String id;
+  final String name;
+  final int? contextWindow;
+  final int? maxOutputTokens;
+  final bool? supportsImages;
+  final bool? supportsTools;
+  final bool? canReason;
+  final List<String> reasoningEfforts;
+
+  String get displayName => name.isEmpty ? id : name;
+}
+
+class ModelReference {
+  const ModelReference({required this.providerId, required this.modelId});
+
+  final String providerId;
+  final String modelId;
 }
 
 class ChatMessage {

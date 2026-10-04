@@ -10,8 +10,11 @@ class SettingsScreen extends StatelessWidget {
     super.key,
     required this.selectedTab,
     required this.providers,
+    required this.refreshingProviderIds,
+    required this.modelDiscoveryErrors,
     required this.onSelectTab,
     required this.onAddProvider,
+    required this.onRefreshModels,
     required this.onDeleteProvider,
     required this.onNotice,
     required this.workspacePath,
@@ -22,8 +25,11 @@ class SettingsScreen extends StatelessWidget {
 
   final SettingsTab selectedTab;
   final List<ProviderProfile> providers;
+  final Set<String> refreshingProviderIds;
+  final Map<String, String> modelDiscoveryErrors;
   final ValueChanged<SettingsTab> onSelectTab;
   final ValueChanged<ProviderProfile> onAddProvider;
+  final ValueChanged<ProviderProfile> onRefreshModels;
   final ValueChanged<ProviderProfile> onDeleteProvider;
   final ValueChanged<String> onNotice;
   final String? workspacePath;
@@ -94,7 +100,10 @@ class SettingsScreen extends StatelessWidget {
         ),
       SettingsTab.models => _ModelSettings(
           providers: providers,
+          refreshingProviderIds: refreshingProviderIds,
+          modelDiscoveryErrors: modelDiscoveryErrors,
           onAddProvider: onAddProvider,
+          onRefreshModels: onRefreshModels,
           onDeleteProvider: onDeleteProvider,
         ),
       SettingsTab.tools => _ToolSettings(
@@ -271,12 +280,18 @@ class _GeneralSettings extends StatelessWidget {
 class _ModelSettings extends StatelessWidget {
   const _ModelSettings({
     required this.providers,
+    required this.refreshingProviderIds,
+    required this.modelDiscoveryErrors,
     required this.onAddProvider,
+    required this.onRefreshModels,
     required this.onDeleteProvider,
   });
 
   final List<ProviderProfile> providers;
+  final Set<String> refreshingProviderIds;
+  final Map<String, String> modelDiscoveryErrors;
   final ValueChanged<ProviderProfile> onAddProvider;
+  final ValueChanged<ProviderProfile> onRefreshModels;
   final ValueChanged<ProviderProfile> onDeleteProvider;
 
   Future<void> _add(BuildContext context) async {
@@ -310,7 +325,7 @@ class _ModelSettings extends StatelessWidget {
               SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Provider profiles, API keys, and chat messages stay in memory for this session. Messages are sent to the configured provider.',
+                  'Provider profiles and API keys stay in memory for this session. Models are discovered from the provider model list; the entered model remains available when discovery is unsupported.',
                   style: TextStyle(
                     color: AppColors.ink,
                     fontSize: 12.5,
@@ -361,7 +376,56 @@ class _ModelSettings extends StatelessWidget {
                     ),
                   ),
                   title: Text(provider.name),
-                  subtitle: Text(provider.model + ' · ' + provider.endpoint),
+                  subtitle: Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          provider.endpoint,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          '${provider.availableModels.length} ${provider.availableModels.length == 1 ? 'model' : 'models'} available',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        if (refreshingProviderIds.contains(provider.id)) ...[
+                          const SizedBox(height: 6),
+                          const Row(
+                            children: [
+                              SizedBox(
+                                width: 12,
+                                height: 12,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                              SizedBox(width: 7),
+                              Text(
+                                'Discovering models',
+                                style: TextStyle(
+                                  color: AppColors.blueDeep,
+                                  fontSize: 10.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                        if (modelDiscoveryErrors[provider.id] case final error?)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              error,
+                              style: const TextStyle(
+                                color: AppColors.red,
+                                fontSize: 10.5,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -370,6 +434,14 @@ class _ModelSettings extends StatelessWidget {
                         color: AppColors.green,
                       ),
                       const SizedBox(width: 7),
+                      IconButton(
+                        key: Key('provider.refresh.${provider.id}'),
+                        tooltip: 'Refresh models',
+                        onPressed: refreshingProviderIds.contains(provider.id)
+                            ? null
+                            : () => onRefreshModels(provider),
+                        icon: const Icon(AppIcons.refreshRounded, size: 18),
+                      ),
                       IconButton(
                         tooltip: 'Remove ' + provider.name,
                         onPressed: () => onDeleteProvider(provider),
@@ -464,7 +536,7 @@ class _ProviderDialogState extends State<_ProviderDialog> {
     Navigator.pop(
       context,
       ProviderProfile(
-        id: name + ':' + model + ':' + endpoint,
+        id: name + ':' + endpoint,
         name: name,
         model: model,
         endpoint: endpoint,

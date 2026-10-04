@@ -13,6 +13,7 @@ import 'services/project_read_tool_executor.dart';
 import 'screens/app_screens.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/app_icons.dart';
+import 'widgets/model_picker_dialog.dart';
 import 'widgets/penguin_mark.dart';
 
 class PenguinCodeApp extends StatelessWidget {
@@ -72,6 +73,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final List<Project> _projects = [];
   final List<ChatConversation> _chats = [];
   final List<ProviderProfile> _providers = [];
+  final Set<String> _refreshingProviderIds = {};
+  final Map<String, String> _modelDiscoveryErrors = {};
   final List<AgentTask> _agentTasks = [];
   final Map<String, List<ChatMessage>> _messagesByChatId = {};
   final Map<String, Completer<void>> _generationStops = {};
@@ -82,6 +85,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   int _messageId = 0;
   String? _activeChatId;
   String? _activeProjectId;
+  String? _selectedProviderId;
   String? _selectedModelId;
   AgentPermissionMode _permissionMode = AgentPermissionMode.askBeforeEachAction;
 
@@ -117,7 +121,20 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
 
   ProviderProfile? get _selectedProvider {
     for (final provider in _providers) {
-      if (provider.id == _selectedModelId) return provider;
+      if (provider.id == _selectedProviderId) {
+        return provider.copyWith(
+            model:
+                _selectedModelId == null ? provider.model : _selectedModelId);
+      }
+    }
+    return null;
+  }
+
+  ModelProfile? get _selectedModelProfile {
+    final provider = _selectedProvider;
+    if (provider == null) return null;
+    for (final model in provider.availableModels) {
+      if (model.id == provider.model) return model;
     }
     return null;
   }
@@ -346,15 +363,82 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   }
 
   void _addProvider(ProviderProfile provider) {
+    final configuredModels = provider.availableModels;
+    final configuredProvider = provider.copyWith(models: configuredModels);
     setState(() {
-      _providers.removeWhere((item) => item.id == provider.id);
-      _providers.add(provider);
-      _selectedModelId = provider.id;
+      _providers.removeWhere((item) => item.id == configuredProvider.id);
+      _providers.add(configuredProvider);
+      _selectedProviderId = configuredProvider.id;
+      _selectedModelId = configuredProvider.model;
       _page = AppPage.chat;
     });
     _showNotice(
       'Provider profile saved for this session.',
     );
+    unawaited(_refreshProviderModels(configuredProvider.id));
+  }
+
+  Future<void> _refreshProviderModels(String providerId) async {
+    ProviderProfile? provider;
+    for (final item in _providers) {
+      if (item.id == providerId) provider = item;
+    }
+    if (provider == null) return;
+    setState(() {
+      _refreshingProviderIds.add(providerId);
+      _modelDiscoveryErrors.remove(providerId);
+    });
+    try {
+      final discovered = await _chatClient.discoverModels(provider: provider);
+      if (!mounted) return;
+      final index = _providers.indexWhere((item) => item.id == providerId);
+      if (index < 0) return;
+      final latestProvider = _providers[index];
+      final discoveredById = {for (final model in discovered) model.id: model};
+      final models = <ModelProfile>[
+        discoveredById[latestProvider.model] ??
+            ModelProfile(id: latestProvider.model),
+        for (final model in discovered)
+          if (model.id != latestProvider.model) model,
+      ];
+      setState(() {
+        _providers[index] = latestProvider.copyWith(models: models);
+        if (_selectedProviderId == providerId &&
+            !_providers[index]
+                .availableModels
+                .any((model) => model.id == _selectedModelId)) {
+          _selectedModelId = latestProvider.model;
+        }
+      });
+    } on ChatConnectionException catch (error) {
+      if (mounted) {
+        setState(() => _modelDiscoveryErrors[providerId] = error.message);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _modelDiscoveryErrors[providerId] =
+            'Could not read the provider model list.');
+      }
+    } finally {
+      if (mounted) setState(() => _refreshingProviderIds.remove(providerId));
+    }
+  }
+
+  Future<void> _openModelPicker() async {
+    final selected = await showDialog<ModelReference>(
+      context: context,
+      builder: (context) => ModelPickerDialog(
+        providers: List.unmodifiable(_providers),
+        selectedProviderId: _selectedProviderId,
+        selectedModelId: _selectedModelId,
+        onConfigureModels: _openModelSetup,
+      ),
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _selectedProviderId = selected.providerId;
+      _selectedModelId = selected.modelId;
+    });
   }
 
   void _selectPage(AppPage page) {
@@ -472,6 +556,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         history: history,
         projectPath: project.path,
         permissionMode: _permissionMode,
+        enableProjectTools: _permissionMode != AgentPermissionMode.chatOnly &&
+            _selectedModelProfile?.supportsTools != false,
         stop: stop,
       ),
     );
@@ -488,6 +574,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     required List<ChatMessage> history,
     required String projectPath,
     required AgentPermissionMode permissionMode,
+    required bool enableProjectTools,
     required Completer<void> stop,
   }) async {
     var activeAssistantMessageId = assistantMessageId;
@@ -496,11 +583,12 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       for (var toolRound = 0; toolRound < 6; toolRound++) {
         if (stop.isCompleted) return;
         final toolCalls = <AgentToolCall>[];
+        var rejectedToolCall = false;
         await for (final event in _chatClient.streamEvents(
           provider: provider,
           history: history,
           abortTrigger: stop.future,
-          enableProjectTools: permissionMode != AgentPermissionMode.chatOnly,
+          enableProjectTools: enableProjectTools,
         )) {
           if (!mounted) return;
           switch (event) {
@@ -514,7 +602,21 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                 ),
               );
             case ChatToolCallEvent(:final toolCall):
-              toolCalls.add(toolCall);
+              if (enableProjectTools) {
+                toolCalls.add(toolCall);
+              } else if (!rejectedToolCall) {
+                rejectedToolCall = true;
+                _updateChatMessage(
+                  chatId,
+                  activeAssistantMessageId,
+                  (message) => message.copyWith(
+                    content: message.content.isEmpty
+                        ? 'The selected model or permission mode does not allow project tools.'
+                        : '${message.content}\n\nThe selected model or permission mode does not allow project tools.',
+                    status: ChatMessageStatus.streaming,
+                  ),
+                );
+              }
           }
         }
         if (!mounted || stop.isCompleted) return;
@@ -522,7 +624,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           _updateChatMessage(
             chatId,
             activeAssistantMessageId,
-            (message) => message.copyWith(status: ChatMessageStatus.complete),
+            (message) => message.copyWith(
+              status: ChatMessageStatus.complete,
+            ),
           );
           return;
         }
@@ -799,6 +903,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         history: history,
         projectPath: project.path,
         permissionMode: _permissionMode,
+        enableProjectTools: _permissionMode != AgentPermissionMode.chatOnly &&
+            _selectedModelProfile?.supportsTools != false,
         stop: stop,
       ),
     );
@@ -864,12 +970,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                             sidebarOpen: showSidebar,
                             activeProject: _activeProject,
                             selectedProvider: _selectedProvider,
-                            providers: _providers,
                             onToggleSidebar: _toggleSidebar,
                             onSelectWorkspace: _chooseProject,
-                            onSelectModel: (id) =>
-                                setState(() => _selectedModelId = id),
-                            onConfigureModels: _openModelSetup,
+                            onChooseModel: _openModelPicker,
                             onOpenAgents: () => _selectPage(AppPage.agents),
                             onOpenChanges: () => _selectPage(AppPage.changes),
                           ),
@@ -925,13 +1028,21 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                   key: const Key('page.settings'),
                                   selectedTab: _settingsTab,
                                   providers: _providers,
+                                  refreshingProviderIds: _refreshingProviderIds,
+                                  modelDiscoveryErrors: _modelDiscoveryErrors,
                                   onSelectTab: (tab) =>
                                       setState(() => _settingsTab = tab),
                                   onAddProvider: _addProvider,
+                                  onRefreshModels: (provider) =>
+                                      _refreshProviderModels(provider.id),
                                   onDeleteProvider: (provider) => setState(() {
                                     _providers.remove(provider);
-                                    if (_selectedModelId == provider.id)
+                                    _refreshingProviderIds.remove(provider.id);
+                                    _modelDiscoveryErrors.remove(provider.id);
+                                    if (_selectedProviderId == provider.id) {
+                                      _selectedProviderId = null;
                                       _selectedModelId = null;
+                                    }
                                   }),
                                   onNotice: _showNotice,
                                   workspacePath: _activeProject?.path,
@@ -1682,11 +1793,9 @@ class _TopBar extends StatelessWidget {
     required this.sidebarOpen,
     required this.activeProject,
     required this.selectedProvider,
-    required this.providers,
     required this.onToggleSidebar,
     required this.onSelectWorkspace,
-    required this.onSelectModel,
-    required this.onConfigureModels,
+    required this.onChooseModel,
     required this.onOpenAgents,
     required this.onOpenChanges,
   });
@@ -1695,11 +1804,9 @@ class _TopBar extends StatelessWidget {
   final bool sidebarOpen;
   final Project? activeProject;
   final ProviderProfile? selectedProvider;
-  final List<ProviderProfile> providers;
   final VoidCallback onToggleSidebar;
   final VoidCallback onSelectWorkspace;
-  final ValueChanged<String> onSelectModel;
-  final VoidCallback onConfigureModels;
+  final VoidCallback onChooseModel;
   final VoidCallback onOpenAgents;
   final VoidCallback onOpenChanges;
 
@@ -1794,58 +1901,15 @@ class _TopBar extends StatelessWidget {
                   ),
                 ),
               if (!compact) const SizedBox(width: 9),
-              PopupMenuButton<String>(
+              TextButton(
                 key: const Key('model.selector'),
-                tooltip: 'Choose provider and model',
-                onSelected: (value) {
-                  if (value == 'configure') {
-                    onConfigureModels();
-                  } else {
-                    onSelectModel(value);
-                  }
-                },
-                itemBuilder: (context) => [
-                  if (providers.isEmpty)
-                    const PopupMenuItem<String>(
-                      enabled: false,
-                      child: Text('No models configured'),
-                    )
-                  else
-                    ...providers.map(
-                      (provider) => PopupMenuItem<String>(
-                        value: provider.id,
-                        child: Row(
-                          children: [
-                            const Icon(AppIcons.smartToyOutlined, size: 18),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                provider.routeLabel,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            if (provider.id == selectedProvider?.id)
-                              const Icon(
-                                AppIcons.checkRounded,
-                                size: 17,
-                                color: AppColors.blue,
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  const PopupMenuDivider(),
-                  const PopupMenuItem(
-                    value: 'configure',
-                    child: Row(
-                      children: [
-                        Icon(AppIcons.addRounded, size: 18),
-                        SizedBox(width: 8),
-                        Text('Configure models'),
-                      ],
-                    ),
-                  ),
-                ],
+                onPressed: onChooseModel,
+                style: TextButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  foregroundColor: AppColors.ink,
+                ),
                 child: Container(
                   height: 38,
                   constraints: BoxConstraints(maxWidth: compact ? 160 : 220),

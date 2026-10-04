@@ -11,6 +11,7 @@ abstract final class AppIcons {
   static const chatBubbleOutlineRounded = LucideIcons.messageSquare;
   static const checkRounded = LucideIcons.check;
   static const cloudOutlined = LucideIcons.cloud;
+  static const closeRounded = LucideIcons.x;
   static const deleteOutlineRounded = LucideIcons.trash2;
   static const devicesOutlined = LucideIcons.monitorSmartphone;
   static const differenceOutlined = LucideIcons.fileDiff;
@@ -20,6 +21,7 @@ abstract final class AppIcons {
   static const hourglassEmptyRounded = LucideIcons.hourglass;
   static const hand = LucideIcons.hand;
   static const hubOutlined = LucideIcons.network;
+  static const imageOutlined = LucideIcons.image;
   static const infoOutlineRounded = LucideIcons.info;
   static const keyOutlined = LucideIcons.keyRound;
   static const keyboardArrowDownRounded = LucideIcons.chevronDown;
@@ -30,6 +32,9 @@ abstract final class AppIcons {
   static const menuOpenRounded = LucideIcons.panelLeftClose;
   static const menuRounded = LucideIcons.panelLeft;
   static const moreHorizRounded = LucideIcons.ellipsis;
+  static const modelContext = LucideIcons.database;
+  static const modelReasoning = LucideIcons.brain;
+  static const modelTools = LucideIcons.wrench;
   static const personOutlineRounded = LucideIcons.userRound;
   static const rateReviewOutlined = LucideIcons.squarePen;
   static const removeRedEyeOutlined = LucideIcons.eye;

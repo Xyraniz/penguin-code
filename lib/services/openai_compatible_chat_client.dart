@@ -48,6 +48,82 @@ class OpenAiCompatibleChatClient {
     }
   }
 
+  Future<List<ModelProfile>> discoverModels({
+    required ProviderProfile provider,
+  }) async {
+    final uri = _modelsUri(provider.endpoint);
+    final headers = <String, String>{'Accept': 'application/json'};
+    final apiKey = provider.apiKey?.trim();
+    if (apiKey != null && apiKey.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $apiKey';
+    }
+
+    late http.Response response;
+    try {
+      response = await _client
+          .get(uri, headers: headers)
+          .timeout(const Duration(seconds: 12));
+    } on TimeoutException {
+      throw const ChatConnectionException(
+        'Model discovery timed out. Check the provider and try again.',
+      );
+    } on http.ClientException {
+      throw const ChatConnectionException(
+        'Could not connect to the provider to discover models.',
+      );
+    } on SocketException {
+      throw const ChatConnectionException(
+        'Could not connect to the provider to discover models.',
+      );
+    }
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ChatConnectionException(
+        'Model discovery failed with HTTP ${response.statusCode}.',
+      );
+    }
+    if (response.bodyBytes.length > 4 * 1024 * 1024) {
+      throw const ChatConnectionException(
+        'The provider model list is larger than the 4 MiB limit.',
+      );
+    }
+
+    late dynamic decoded;
+    try {
+      decoded = jsonDecode(response.body);
+    } on FormatException {
+      throw const ChatConnectionException(
+        'The provider returned an unreadable model list.',
+      );
+    }
+
+    final entries = decoded is List
+        ? decoded
+        : decoded is Map
+            ? (decoded['data'] ?? decoded['models'])
+            : null;
+    if (entries is! List) {
+      throw const ChatConnectionException(
+        'The provider response does not contain a model list.',
+      );
+    }
+
+    final models = <ModelProfile>[];
+    final seenIds = <String>{};
+    for (final entry in entries) {
+      if (entry is! Map) continue;
+      final id = _stringValue(entry['id']) ?? _stringValue(entry['name']);
+      if (id == null || !seenIds.add(id)) continue;
+      models.add(_parseModel(entry, id));
+    }
+    if (models.isEmpty) {
+      throw const ChatConnectionException(
+        'The provider did not return any models with identifiers.',
+      );
+    }
+    return List.unmodifiable(models);
+  }
+
   Stream<String> streamCompletion({
     required ProviderProfile provider,
     required List<ChatMessage> history,
@@ -354,6 +430,123 @@ class OpenAiCompatibleChatClient {
         ? normalizedPath
         : '$normalizedPath/chat/completions';
     return base.replace(path: endpointPath);
+  }
+
+  Uri _modelsUri(String endpoint) {
+    final completion = _completionUri(endpoint);
+    final basePath = completion.path.replaceFirst(
+      RegExp(r'/chat/completions$'),
+      '',
+    );
+    return completion.replace(path: '$basePath/models');
+  }
+
+  ModelProfile _parseModel(Map<dynamic, dynamic> value, String id) {
+    final capabilities = _asMap(value['capabilities']);
+    final architecture = _asMap(value['architecture']);
+    final reasoning = _asMap(value['reasoning']);
+    final parameters = _stringValues(value['supported_parameters']);
+    final inputModalities = {
+      ..._stringValues(value['input_modalities']),
+      ..._stringValues(architecture['input_modalities']),
+    }.map((item) => item.toLowerCase()).toSet();
+    final capabilityNames =
+        capabilities.keys.map((key) => key.toString().toLowerCase()).toSet();
+    final capabilityValues = capabilities.values
+        .whereType<String>()
+        .map((item) => item.toLowerCase())
+        .toSet();
+    final reasoningEfforts =
+        _stringValues(value['reasoning_efforts']).isNotEmpty
+            ? _stringValues(value['reasoning_efforts'])
+            : _stringValues(value['supported_reasoning_efforts']).isNotEmpty
+                ? _stringValues(value['supported_reasoning_efforts'])
+                : _stringValues(reasoning['efforts']);
+
+    return ModelProfile(
+      id: id,
+      name: _stringValue(value['display_name']) ??
+          _stringValue(value['name']) ??
+          '',
+      contextWindow: _firstInteger([
+        value['context_length'],
+        value['context_window'],
+        value['contextWindow'],
+        value['max_model_len'],
+        capabilities['context_length'],
+        architecture['context_length'],
+      ]),
+      maxOutputTokens: _firstInteger([
+        value['max_output_tokens'],
+        value['max_completion_tokens'],
+        value['default_max_tokens'],
+      ]),
+      supportsImages: _firstBoolean([
+        value['supports_images'],
+        value['supports_vision'],
+        capabilities['images'],
+        capabilities['vision'],
+        if (inputModalities.contains('image')) true,
+        if (parameters.any((item) =>
+            item.toLowerCase().contains('image') ||
+            item.toLowerCase().contains('vision')))
+          true,
+      ]),
+      supportsTools: _firstBoolean([
+        value['supports_tools'],
+        value['tool_call'],
+        capabilities['tools'],
+        capabilities['tool_call'],
+        if (parameters.any((item) => item.toLowerCase().contains('tool'))) true,
+      ]),
+      canReason: _firstBoolean([
+        value['can_reason'],
+        value['supports_reasoning'],
+        reasoning['enabled'],
+        capabilities['reasoning'],
+        if (reasoningEfforts.isNotEmpty) true,
+        if (capabilityNames.contains('reasoning') ||
+            capabilityValues.contains('reasoning'))
+          true,
+      ]),
+      reasoningEfforts: List.unmodifiable(reasoningEfforts),
+    );
+  }
+
+  Map<dynamic, dynamic> _asMap(dynamic value) =>
+      value is Map ? value : const {};
+
+  String? _stringValue(dynamic value) {
+    if (value is! String) return null;
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  List<String> _stringValues(dynamic value) => value is List
+      ? value
+          .whereType<String>()
+          .map((item) => item.trim())
+          .where((item) => item.isNotEmpty)
+          .toList()
+      : const [];
+
+  int? _firstInteger(List<dynamic> values) {
+    for (final value in values) {
+      if (value is int && value > 0) return value;
+      if (value is num && value > 0) return value.round();
+      if (value is String) {
+        final parsed = int.tryParse(value);
+        if (parsed != null && parsed > 0) return parsed;
+      }
+    }
+    return null;
+  }
+
+  bool? _firstBoolean(List<dynamic> values) {
+    for (final value in values) {
+      if (value is bool) return value;
+    }
+    return null;
   }
 
   void close() {

@@ -8,6 +8,142 @@ import 'package:penguin_code/services/openai_compatible_chat_client.dart';
 
 void main() {
   group('OpenAiCompatibleChatClient', () {
+    test('discovers models and parses optional capability metadata', () async {
+      late http.BaseRequest sentRequest;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          sentRequest = request;
+          return _response(jsonEncode({
+            'object': 'list',
+            'data': [
+              {
+                'id': 'reasoner-v2',
+                'display_name': 'Reasoner V2',
+                'context_length': 65536,
+                'max_output_tokens': 8192,
+                'architecture': {
+                  'input_modalities': ['text', 'image'],
+                },
+                'capabilities': {'tools': true, 'reasoning': true},
+                'reasoning_efforts': ['low', 'high'],
+              },
+              {'id': 'text-only', 'supports_images': false},
+              {'id': 'reasoner-v2'},
+              {'id': ''},
+            ],
+          }));
+        }),
+      );
+
+      final models = await client.discoverModels(
+        provider:
+            _provider(endpoint: 'https://api.example.test/v1/chat/completions'),
+      );
+
+      expect(sentRequest.method, 'GET');
+      expect(sentRequest.url.toString(), 'https://api.example.test/v1/models');
+      expect(sentRequest.headers['authorization'], 'Bearer test-secret');
+      expect(models.map((model) => model.id), ['reasoner-v2', 'text-only']);
+      expect(models.first.displayName, 'Reasoner V2');
+      expect(models.first.contextWindow, 65536);
+      expect(models.first.maxOutputTokens, 8192);
+      expect(models.first.supportsImages, isTrue);
+      expect(models.first.supportsTools, isTrue);
+      expect(models.first.canReason, isTrue);
+      expect(models.first.reasoningEfforts, ['low', 'high']);
+      expect(models.last.supportsImages, isFalse);
+      expect(models.last.supportsTools, isNull);
+    });
+
+    test('discovers models from a local provider without an API key', () async {
+      late http.BaseRequest sentRequest;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          sentRequest = request;
+          return _response(jsonEncode([
+            {'id': 'qwen3:8b'},
+          ]));
+        }),
+      );
+
+      final models = await client.discoverModels(
+        provider: _provider(
+          endpoint: 'http://127.0.0.1:11434/v1/',
+          apiKey: null,
+        ),
+      );
+
+      expect(sentRequest.url.toString(), 'http://127.0.0.1:11434/v1/models');
+      expect(sentRequest.headers.containsKey('authorization'), isFalse);
+      expect(models.single.id, 'qwen3:8b');
+    });
+
+    test('decodes unexpected tool calls even when tool definitions are omitted',
+        () async {
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((_) async => _response([
+              _event({
+                'choices': [
+                  {
+                    'delta': {
+                      'tool_calls': [
+                        {
+                          'index': 0,
+                          'id': 'call-1',
+                          'function': {
+                            'name': 'read_project_file',
+                            'arguments': '{"path":"README.md"}',
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }),
+              'data: [DONE]\n\n',
+            ].join())),
+      );
+
+      final events = await client
+          .streamEvents(
+            provider: _provider(),
+            history: const [],
+            abortTrigger: Completer<void>().future,
+            enableProjectTools: false,
+          )
+          .toList();
+
+      expect(events, hasLength(1));
+      expect(events.single, isA<ChatToolCallEvent>());
+      expect(
+        (events.single as ChatToolCallEvent).toolCall.name,
+        'read_project_file',
+      );
+    });
+
+    test('reports sanitized model discovery errors', () async {
+      final unauthorized = OpenAiCompatibleChatClient(
+        client: _FakeClient((_) async => _response('secret body', status: 401)),
+      );
+      await expectLater(
+        unauthorized.discoverModels(provider: _provider()),
+        throwsA(
+          isA<ChatConnectionException>()
+              .having((error) => error.message, 'message', contains('HTTP 401'))
+              .having((error) => error.message, 'message',
+                  isNot(contains('secret'))),
+        ),
+      );
+
+      final malformed = OpenAiCompatibleChatClient(
+        client: _FakeClient((_) async => _response('{bad json}')),
+      );
+      await expectLater(
+        malformed.discoverModels(provider: _provider()),
+        throwsA(isA<ChatConnectionException>()),
+      );
+    });
+
     test('sends chat history and decodes streamed SSE across byte chunks',
         () async {
       late http.BaseRequest sentRequest;

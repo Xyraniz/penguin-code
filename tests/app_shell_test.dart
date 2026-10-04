@@ -84,7 +84,7 @@ void main() {
     await tester.tap(find.byKey(const Key('home.project.create')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Root'), findsOneWidget);
+    expect(find.text('Root'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 
@@ -139,7 +139,13 @@ void main() {
     tester,
   ) async {
     await _setDesktopSize(tester);
-    await tester.pumpWidget(const PenguinCodeApp());
+    await tester.pumpWidget(
+      PenguinCodeApp(
+        chatClient: OpenAiCompatibleChatClient(
+          client: _FakeChatClient((_) async => _chatResponse('')),
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('sidebar.settings')));
@@ -173,6 +179,113 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('session-only-secret'), findsNothing);
+  });
+
+  testWidgets('searches discovered models and sends the selected model id', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    late http.BaseRequest sentRequest;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        sentRequest = request;
+        return _chatResponse(
+            '${_sseChunk('Selected model reply')}data: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(
+      PenguinCodeApp(
+        initialProjects: const [_testProject],
+        chatClient: client,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _configureProvider(tester);
+    await tester.tap(find.byKey(const Key('model.selector')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('model.picker.search')),
+      'fast',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Fast model'), findsOneWidget);
+    expect(find.text('32.8k context'), findsOneWidget);
+    expect(find.text('Test provider'), findsOneWidget);
+    expect(find.text('test-model'), findsNothing);
+    await tester.tap(
+      find.byKey(
+        const Key(
+          'model.option.Test provider:https://provider.example.test/v1.fast-model',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Test provider · Fast model'), findsOneWidget);
+
+    await _startProjectChat(tester);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Use the selected model',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await tester.pumpAndSettle();
+
+    final body =
+        jsonDecode((sentRequest as http.Request).body) as Map<String, dynamic>;
+    expect(body['model'], 'fast-model');
+    expect(body.containsKey('tools'), isFalse);
+    expect(find.text('Selected model reply'), findsOneWidget);
+  });
+
+  testWidgets('does not run an unexpected tool from a model without tools', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    var requestCount = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requestCount++;
+        return _chatResponse(
+          '${_sseToolCall()}data: [DONE]\n\n',
+        );
+      }),
+    );
+    await tester.pumpWidget(
+      PenguinCodeApp(
+        initialProjects: const [_testProject],
+        chatClient: client,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _configureProvider(tester);
+    await _selectDiscoveredModel(tester, 'fast-model');
+    await _startProjectChat(tester);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Read a file',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await tester.pumpAndSettle();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 40)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(requestCount, 1);
+    final renderedText = tester
+        .widgetList<Text>(find.byType(Text))
+        .map((widget) => widget.data ?? widget.textSpan?.toPlainText())
+        .toList();
+    expect(
+      find.text(
+          'The selected model or permission mode does not allow project tools.'),
+      findsOneWidget,
+      reason: renderedText.join('\n'),
+    );
+    expect(find.text('Checking project files.'), findsNothing);
   });
 
   testWidgets('sends text and renders a streamed provider reply',
@@ -227,9 +340,9 @@ void main() {
         'Bearer session-test-key');
     final body =
         jsonDecode((sentRequest as http.Request).body) as Map<String, dynamic>;
-    expect(body['messages'], [
-      {'role': 'user', 'content': 'Explain this value'},
-    ]);
+    final messages = body['messages'] as List<dynamic>;
+    expect(messages.last, {'role': 'user', 'content': 'Explain this value'});
+    expect(messages.first['role'], 'system');
   });
 
   testWidgets('attaches selected project code as message context',
@@ -279,10 +392,11 @@ void main() {
     final body =
         jsonDecode((sentRequest as http.Request).body) as Map<String, dynamic>;
     final messages = body['messages'] as List<dynamic>;
-    expect(messages, hasLength(1));
-    expect(messages.single['content'], contains('lib/example.dart'));
-    expect(messages.single['content'], contains('const answer = 42;'));
-    expect(messages.single['content'], contains('Explain this code'));
+    expect(messages, hasLength(2));
+    expect(messages.last['role'], 'user');
+    expect(messages.last['content'], contains('lib/example.dart'));
+    expect(messages.last['content'], contains('const answer = 42;'));
+    expect(messages.last['content'], contains('Explain this code'));
     expect(
       find.descendant(
         of: find.byKey(const Key('chat.messages')),
@@ -469,6 +583,22 @@ Future<void> _startProjectChat(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+Future<void> _selectDiscoveredModel(
+  WidgetTester tester,
+  String modelId,
+) async {
+  await tester.tap(find.byKey(const Key('model.selector')));
+  await tester.pumpAndSettle();
+  await tester.tap(
+    find.byKey(
+      Key(
+        'model.option.Test provider:https://provider.example.test/v1.$modelId',
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
 String _sseChunk(String content) => 'data: ${jsonEncode({
           'choices': [
             {
@@ -476,6 +606,43 @@ String _sseChunk(String content) => 'data: ${jsonEncode({
             }
           ]
         })}\n\n';
+
+String _sseToolCall() => 'data: ${jsonEncode({
+          'choices': [
+            {
+              'delta': {
+                'tool_calls': [
+                  {
+                    'index': 0,
+                    'id': 'call-1',
+                    'function': {
+                      'name': 'read_project_file',
+                      'arguments': '{"path":"README.md"}',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        })}\n\n';
+
+http.StreamedResponse _modelsResponse() => http.StreamedResponse(
+      Stream.value(
+        utf8.encode(jsonEncode({
+          'data': [
+            {'id': 'test-model', 'supports_tools': true},
+            {
+              'id': 'fast-model',
+              'display_name': 'Fast model',
+              'context_length': 32768,
+              'supports_tools': false,
+            },
+          ],
+        })),
+      ),
+      200,
+      headers: {'content-type': 'application/json'},
+    );
 
 http.StreamedResponse _chatResponse(String body, {int status = 200}) =>
     http.StreamedResponse(Stream.value(utf8.encode(body)), status);
@@ -487,5 +654,7 @@ class _FakeChatClient extends http.BaseClient {
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) =>
-      handler(request);
+      request.method == 'GET'
+          ? Future.value(_modelsResponse())
+          : handler(request);
 }
