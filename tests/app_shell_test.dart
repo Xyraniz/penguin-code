@@ -8,17 +8,42 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:penguin_code/models.dart';
 import 'package:penguin_code/penguin_code_app.dart';
+import 'package:penguin_code/services/agent_data_store.dart';
 import 'package:penguin_code/services/openai_compatible_chat_client.dart';
+import 'package:penguin_code/services/mcp_stdio_client.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+
+late AgentDataStore _testDataStore;
 
 void main() {
+  late Directory testDocumentsDirectory;
+
+  setUp(() {
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.empty();
+  });
+
+  setUp(() async {
+    testDocumentsDirectory =
+        await Directory.systemTemp.createTemp('penguin-app-shell-documents-');
+    _testDataStore = AgentDataStore(documentsDirectory: testDocumentsDirectory);
+  });
+
+  tearDown(() async {
+    if (testDocumentsDirectory.existsSync()) {
+      await testDocumentsDirectory.delete(recursive: true);
+    }
+  });
+
   testWidgets('shows the chat shell and toggles conversation history', (
     tester,
   ) async {
     await _setDesktopSize(tester);
-    await tester.pumpWidget(const PenguinCodeApp());
+    await tester.pumpWidget(_testApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('Choose a project to get started'), findsOneWidget);
+    expect(find.text('Choose a folder to add a project.'), findsOneWidget);
     expect(find.text('Chat'), findsWidgets);
     expect(find.text('Subagents'), findsNothing);
     expect(find.text('Changes'), findsNothing);
@@ -39,7 +64,7 @@ void main() {
   ) async {
     await _setDesktopSize(tester, width: 760);
     await tester.pumpWidget(
-      const PenguinCodeApp(initialProjects: [_testProject]),
+      _testApp(initialProjects: [_testProject]),
     );
     await tester.pumpAndSettle();
 
@@ -48,11 +73,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Recent chats'), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('sidebar.new-chat')));
+    await _createNewChat(tester);
+    expect(find.byKey(const Key('project.picker.title')), findsNothing);
+    await tester.tap(find.byKey(const Key('composer.project.select')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('project.picker.title')), findsOneWidget);
     await tester.tap(find.byKey(const Key('project.select.test-project')));
     await tester.pumpAndSettle();
+    await _createNewChat(tester);
     expect(find.text('Recent chats'), findsNothing);
     expect(find.text('No messages'), findsOneWidget);
     expect(
@@ -79,10 +106,10 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(fileSelectorChannel, null);
     });
-    await tester.pumpWidget(const PenguinCodeApp());
+    await tester.pumpWidget(_testApp());
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('home.project.create')));
+    await tester.tap(find.byKey(const Key('sidebar.project.create')));
     await tester.pumpAndSettle();
 
     expect(find.text('Root'), findsWidgets);
@@ -94,7 +121,7 @@ void main() {
   ) async {
     await _setDesktopSize(tester);
     await tester.pumpWidget(
-      const PenguinCodeApp(initialProjects: [_testProject]),
+      _testApp(initialProjects: [_testProject]),
     );
     await tester.pumpAndSettle();
     await _startProjectChat(tester);
@@ -183,7 +210,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(
+      _testApp(
         initialProjects: [project],
         chatClient: client,
       ),
@@ -291,7 +318,7 @@ void main() {
         }),
       );
       await tester.pumpWidget(
-        PenguinCodeApp(
+        _testApp(
           initialProjects: [project],
           chatClient: client,
         ),
@@ -436,7 +463,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(initialProjects: [project], chatClient: client),
+      _testApp(initialProjects: [project], chatClient: client),
     );
     await tester.pumpAndSettle();
     await _configureProvider(tester);
@@ -580,7 +607,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(initialProjects: [project], chatClient: client),
+      _testApp(initialProjects: [project], chatClient: client),
     );
     await tester.pumpAndSettle();
     await _configureProvider(tester);
@@ -673,7 +700,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(initialProjects: [project], chatClient: client),
+      _testApp(initialProjects: [project], chatClient: client),
     );
     await tester.pumpAndSettle();
     await _configureProvider(tester);
@@ -742,15 +769,13 @@ void main() {
   ) async {
     await _setDesktopSize(tester);
     await tester.pumpWidget(
-      const PenguinCodeApp(initialProjects: [_testProject]),
+      _testApp(initialProjects: [_testProject]),
     );
     await tester.pumpAndSettle();
 
     await _pressShortcut(tester, LogicalKeyboardKey.keyN);
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('project.picker.title')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('project.select.test-project')));
-    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('project.picker.title')), findsNothing);
     expect(find.byTooltip('Options for New chat'), findsOneWidget);
 
     await _pressShortcut(tester, LogicalKeyboardKey.keyB);
@@ -789,7 +814,7 @@ void main() {
   ) async {
     await _setDesktopSize(tester);
     await tester.pumpWidget(
-      PenguinCodeApp(
+      _testApp(
         chatClient: OpenAiCompatibleChatClient(
           client: _FakeChatClient((_) async => _chatResponse('')),
         ),
@@ -830,6 +855,93 @@ void main() {
     expect(find.text('session-only-secret'), findsNothing);
   });
 
+  testWidgets('MCP calls still require approval in Full access mode', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final mcpTransport = _AppFakeMcpTransport();
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requests.add(
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+        );
+        final body = responseIndex++ == 0
+            ? _sseToolCall(
+                name: 'mcp_tool_00_lookup',
+                arguments: '{"query":"penguin"}',
+                id: 'mcp-call',
+              )
+            : _sseChunk('The MCP lookup completed.');
+        return _chatResponse('$body\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(_testApp(
+      initialProjects: const [_testProject],
+      chatClient: client,
+      mcpTransportFactory: (_) async => mcpTransport,
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('MCP servers'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings.mcp.add')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+        find.byKey(const Key('settings.mcp.name')), 'Test MCP');
+    await tester.enterText(
+        find.byKey(const Key('settings.mcp.command')), 'fake-mcp');
+    await tester.tap(find.byKey(const Key('settings.mcp.add.save')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(SwitchListTile).first);
+    await tester.pumpAndSettle();
+    expect(find.text('Connected · 1 tool'), findsOneWidget);
+
+    await tester.tap(find.text('Tools and permissions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('project.access.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('project.access.option.fullAccess')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('project.access.confirm.enable')));
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+    await tester.tap(find.byKey(const Key('sidebar.new-chat')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Look up penguin information',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.byKey(const Key('chat.tool.approve.mcp-call')),
+    );
+
+    final exposedTools = (requests.first['tools'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map((tool) =>
+            (tool['function'] as Map<String, dynamic>)['name'] as String)
+        .toSet();
+    expect(exposedTools, contains('mcp_tool_00_lookup'));
+    expect(mcpTransport.toolCalls, isEmpty);
+
+    await tester.tap(find.byKey(const Key('chat.tool.approve.mcp-call')));
+    await _pumpUntilVisible(tester, find.text('The MCP lookup completed.'));
+    expect(mcpTransport.toolCalls, [
+      {
+        'name': 'lookup',
+        'arguments': {'query': 'penguin'}
+      },
+    ]);
+    expect(find.textContaining('MCP tool · lookup'), findsOneWidget);
+  });
+
   testWidgets('searches discovered models and sends the selected model id', (
     tester,
   ) async {
@@ -843,7 +955,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(
+      _testApp(
         initialProjects: const [_testProject],
         chatClient: client,
       ),
@@ -915,7 +1027,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(
+      _testApp(
         initialProjects: const [_testProject],
         chatClient: client,
       ),
@@ -1003,7 +1115,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(
+      _testApp(
         initialProjects: [project],
         chatClient: client,
       ),
@@ -1102,7 +1214,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(
+      _testApp(
         initialProjects: const [_testProject],
         chatClient: client,
       ),
@@ -1155,7 +1267,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(
+      _testApp(
         initialProjects: const [_testProject],
         chatClient: client,
         attachmentPicker: (project, alreadyAttached) async {
@@ -1218,7 +1330,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(
+      _testApp(
         initialProjects: const [_testProject],
         chatClient: client,
       ),
@@ -1259,7 +1371,7 @@ void main() {
       }),
     );
     await tester.pumpWidget(
-      PenguinCodeApp(
+      _testApp(
         initialProjects: const [_testProject],
         chatClient: client,
       ),
@@ -1306,7 +1418,7 @@ void main() {
     tester,
   ) async {
     await _setDesktopSize(tester);
-    await tester.pumpWidget(const PenguinCodeApp());
+    await tester.pumpWidget(_testApp());
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('topbar.agents')));
@@ -1330,6 +1442,23 @@ void main() {
         find.text('Approved project edits will appear here.'), findsOneWidget);
   });
 }
+
+PenguinCodeApp _testApp({
+  List<Project> initialProjects = const [],
+  OpenAiCompatibleChatClient? chatClient,
+  Future<List<ChatAttachment>> Function(
+    Project project,
+    List<ChatAttachment> alreadyAttached,
+  )? attachmentPicker,
+  McpTransportFactory? mcpTransportFactory,
+}) =>
+    PenguinCodeApp(
+      initialProjects: initialProjects,
+      chatClient: chatClient,
+      attachmentPicker: attachmentPicker,
+      mcpTransportFactory: mcpTransportFactory,
+      dataStore: _testDataStore,
+    );
 
 Future<void> _setDesktopSize(WidgetTester tester, {double width = 1440}) async {
   tester.view.physicalSize = Size(width, 960);
@@ -1377,19 +1506,40 @@ Future<void> _configureProvider(WidgetTester tester) async {
 }
 
 Future<void> _startProjectChat(WidgetTester tester) async {
-  await tester.tap(find.byKey(const Key('sidebar.new-chat')));
+  await _createNewChat(tester);
+  await tester.tap(find.byKey(const Key('composer.project.select')));
   await tester.pumpAndSettle();
   await tester.tap(find.byKey(const Key('project.select.test-project')));
   await tester.pumpAndSettle();
+  await _createNewChat(tester);
+  await _pumpUntilVisible(
+    tester,
+    find.byKey(const Key('project.access.menu')),
+  );
 }
 
 Future<void> _startProjectChatFor(
   WidgetTester tester,
   String projectId,
 ) async {
-  await tester.tap(find.byKey(const Key('sidebar.new-chat')));
+  await _createNewChat(tester);
+  await tester.tap(find.byKey(const Key('composer.project.select')));
   await tester.pumpAndSettle();
   await tester.tap(find.byKey(Key('project.select.$projectId')));
+  await tester.pumpAndSettle();
+  await _createNewChat(tester);
+  await _pumpUntilVisible(
+    tester,
+    find.byKey(const Key('project.access.menu')),
+  );
+}
+
+Future<void> _createNewChat(WidgetTester tester) async {
+  if (find.byKey(const Key('sidebar.new-chat')).evaluate().isEmpty) {
+    await tester.tap(find.byKey(const Key('sidebar.toggle')));
+    await tester.pumpAndSettle();
+  }
+  await tester.tap(find.byKey(const Key('sidebar.new-chat')));
   await tester.pumpAndSettle();
 }
 
@@ -1487,4 +1637,61 @@ class _FakeChatClient extends http.BaseClient {
       request.method == 'GET'
           ? Future.value(_modelsResponse())
           : handler(request);
+}
+
+class _AppFakeMcpTransport implements McpStdioTransport {
+  final _lines = StreamController<String>();
+  final toolCalls = <Map<String, dynamic>>[];
+
+  @override
+  Stream<String> get lines => _lines.stream;
+
+  @override
+  void sendLine(String line) {
+    final request = jsonDecode(line) as Map<String, dynamic>;
+    final method = request['method'];
+    if (method == 'notifications/initialized') return;
+    final Map<String, dynamic> result;
+    if (method == 'initialize') {
+      result = {
+        'protocolVersion': '2025-11-25',
+        'serverInfo': {'name': 'Test MCP', 'version': '1'},
+        'capabilities': {'tools': <String, dynamic>{}},
+      };
+    } else if (method == 'tools/list') {
+      result = {
+        'tools': [
+          {
+            'name': 'lookup',
+            'description': 'Look up a test record.',
+            'inputSchema': {
+              'type': 'object',
+              'properties': {
+                'query': {'type': 'string'}
+              },
+              'required': ['query'],
+            },
+          },
+        ],
+      };
+    } else if (method == 'tools/call') {
+      toolCalls.add(Map<String, dynamic>.from(request['params'] as Map));
+      result = {
+        'content': [
+          {'type': 'text', 'text': 'MCP executed only after approval.'},
+        ],
+        'isError': false,
+      };
+    } else {
+      return;
+    }
+    _lines.add(jsonEncode({
+      'jsonrpc': '2.0',
+      'id': request['id'],
+      'result': result,
+    }));
+  }
+
+  @override
+  Future<void> close() => _lines.close();
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app_theme.dart';
 import '../models.dart';
+import '../services/mcp_stdio_client.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/project_access_menu.dart';
 
@@ -32,6 +33,12 @@ class SettingsScreen extends StatelessWidget {
     required this.onAutoRememberChanged,
     required this.onAutoSelectSkillsChanged,
     required this.skillsDirectoryPath,
+    required this.mcpServers,
+    required this.mcpServerStatuses,
+    required this.onAddMcpServer,
+    required this.onToggleMcpServer,
+    required this.onDeleteMcpServer,
+    required this.onRefreshMcpServer,
   });
 
   final SettingsTab selectedTab;
@@ -58,11 +65,18 @@ class SettingsScreen extends StatelessWidget {
   final ValueChanged<bool> onAutoRememberChanged;
   final ValueChanged<bool> onAutoSelectSkillsChanged;
   final String? skillsDirectoryPath;
+  final List<McpServerProfile> mcpServers;
+  final Map<String, McpServerStatus> mcpServerStatuses;
+  final ValueChanged<McpServerProfile> onAddMcpServer;
+  final void Function(McpServerProfile, bool) onToggleMcpServer;
+  final ValueChanged<McpServerProfile> onDeleteMcpServer;
+  final ValueChanged<McpServerProfile> onRefreshMcpServer;
 
   String get _title => switch (selectedTab) {
         SettingsTab.general => 'General',
         SettingsTab.models => 'Providers and models',
         SettingsTab.tools => 'Tools and permissions',
+        SettingsTab.mcp => 'MCP servers',
         SettingsTab.memory => 'Memories',
         SettingsTab.shortcuts => 'Keyboard shortcuts',
       };
@@ -71,6 +85,7 @@ class SettingsScreen extends StatelessWidget {
         SettingsTab.general => 'Application preferences and active project.',
         SettingsTab.models => 'Connection profiles and available models.',
         SettingsTab.tools => 'Choose which actions require your approval.',
+        SettingsTab.mcp => 'Connect local tool servers to your agent.',
         SettingsTab.memory => 'Personal context and skill matching.',
         SettingsTab.shortcuts => 'Quick actions for working from the keyboard.',
       };
@@ -134,6 +149,14 @@ class SettingsScreen extends StatelessWidget {
           permissionMode: permissionMode,
           onPermissionModeChanged: onPermissionModeChanged,
         ),
+      SettingsTab.mcp => _McpSettings(
+          servers: mcpServers,
+          statuses: mcpServerStatuses,
+          onAdd: onAddMcpServer,
+          onToggle: onToggleMcpServer,
+          onDelete: onDeleteMcpServer,
+          onRefresh: onRefreshMcpServer,
+        ),
       SettingsTab.memory => _MemorySettings(
           memoryText: memoryText,
           memoriesEnabled: memoriesEnabled,
@@ -185,6 +208,11 @@ class SettingsScreen extends StatelessWidget {
                     SettingsTab.tools,
                     AppIcons.securityOutlined,
                     'Tools and permissions',
+                  ),
+                  _tabButton(
+                    SettingsTab.mcp,
+                    AppIcons.hubOutlined,
+                    'MCP servers',
                   ),
                   _tabButton(
                     SettingsTab.memory,
@@ -1009,6 +1037,315 @@ class _SafetyNote extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _McpSettings extends StatelessWidget {
+  const _McpSettings({
+    required this.servers,
+    required this.statuses,
+    required this.onAdd,
+    required this.onToggle,
+    required this.onDelete,
+    required this.onRefresh,
+  });
+
+  final List<McpServerProfile> servers;
+  final Map<String, McpServerStatus> statuses;
+  final ValueChanged<McpServerProfile> onAdd;
+  final void Function(McpServerProfile, bool) onToggle;
+  final ValueChanged<McpServerProfile> onDelete;
+  final ValueChanged<McpServerProfile> onRefresh;
+
+  Future<void> _addServer(BuildContext context) async {
+    final profile = await showDialog<McpServerProfile>(
+      context: context,
+      builder: (context) => const _McpServerDialog(),
+    );
+    if (profile != null) onAdd(profile);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Local MCP servers',
+                style: TextStyle(
+                  color: AppColors.ink,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            FilledButton.icon(
+              key: const Key('settings.mcp.add'),
+              onPressed: () => _addServer(context),
+              icon: const Icon(AppIcons.addRounded, size: 16),
+              label: const Text('Add server'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'MCP servers are programs that run on this computer. Only enable servers you trust. Their discovered tools are sent to the selected model, and every tool call asks for your approval, including in Full access mode.',
+          style: TextStyle(color: AppColors.muted, fontSize: 12, height: 1.5),
+        ),
+        const SizedBox(height: 14),
+        if (servers.isEmpty)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'No MCP servers configured. Add a local server command to make its tools available in chat.',
+                style: TextStyle(color: AppColors.muted, fontSize: 12),
+              ),
+            ),
+          ),
+        for (final server in servers)
+          _McpServerCard(
+            server: server,
+            status: statuses[server.id] ??
+                const McpServerStatus(
+                  state: McpServerConnectionState.disconnected,
+                ),
+            onToggle: (enabled) => onToggle(server, enabled),
+            onDelete: () => onDelete(server),
+            onRefresh: () => onRefresh(server),
+          ),
+      ],
+    );
+  }
+}
+
+class _McpServerCard extends StatelessWidget {
+  const _McpServerCard({
+    required this.server,
+    required this.status,
+    required this.onToggle,
+    required this.onDelete,
+    required this.onRefresh,
+  });
+
+  final McpServerProfile server;
+  final McpServerStatus status;
+  final ValueChanged<bool> onToggle;
+  final VoidCallback onDelete;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final connected = status.state == McpServerConnectionState.connected;
+    final stateText = switch (status.state) {
+      McpServerConnectionState.disconnected => 'Not connected',
+      McpServerConnectionState.connecting => 'Connecting…',
+      McpServerConnectionState.connected =>
+        'Connected · ${status.toolCount} ${status.toolCount == 1 ? 'tool' : 'tools'}',
+      McpServerConnectionState.error =>
+        'Connection failed: ${status.error ?? 'Unknown error.'}',
+    };
+    return Card(
+      margin: const EdgeInsets.only(bottom: 9),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(13, 8, 8, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(AppIcons.hubOutlined,
+                    color: AppColors.blueDeep, size: 19),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(
+                    server.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.ink,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Refresh tools',
+                  onPressed: connected ? onRefresh : null,
+                  icon: const Icon(AppIcons.refreshRounded, size: 17),
+                ),
+                IconButton(
+                  tooltip: 'Remove server',
+                  onPressed: onDelete,
+                  icon: const Icon(AppIcons.deleteOutlineRounded, size: 17),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.only(left: 28, right: 8),
+              child: Text(
+                '${server.command}${server.arguments.isEmpty ? '' : ' ${server.arguments.join(' ')}'}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.muted,
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+            if (status.state == McpServerConnectionState.error)
+              Padding(
+                padding: const EdgeInsets.only(left: 28, top: 5, right: 8),
+                child: Text(
+                  stateText,
+                  style: const TextStyle(
+                    color: AppColors.amber,
+                    fontSize: 11,
+                  ),
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.only(left: 28, top: 5),
+                child: Text(
+                  stateText,
+                  style: const TextStyle(color: AppColors.muted, fontSize: 11),
+                ),
+              ),
+            SwitchListTile(
+              key: Key('settings.mcp.toggle.${server.id}'),
+              contentPadding: const EdgeInsets.only(left: 26, right: 7),
+              dense: true,
+              title: const Text('Connect server'),
+              subtitle:
+                  const Text('Start at launch and expose tools in chats.'),
+              value: server.enabled,
+              onChanged: onToggle,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _McpServerDialog extends StatefulWidget {
+  const _McpServerDialog();
+
+  @override
+  State<_McpServerDialog> createState() => _McpServerDialogState();
+}
+
+class _McpServerDialogState extends State<_McpServerDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _name = TextEditingController();
+  final _command = TextEditingController();
+  final _arguments = TextEditingController();
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _command.dispose();
+    _arguments.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    if (!_formKey.currentState!.validate()) return;
+    final arguments = _arguments.text
+        .split(RegExp(r'\r?\n'))
+        .where((value) => value.trim().isNotEmpty)
+        .map((value) => value.trim())
+        .toList(growable: false);
+    Navigator.of(context).pop(McpServerProfile(
+      id: 'mcp-${DateTime.now().microsecondsSinceEpoch}',
+      name: _name.text.trim(),
+      command: _command.text.trim(),
+      arguments: arguments,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      key: const Key('settings.mcp.add.dialog'),
+      title: const Text('Add local MCP server'),
+      content: SizedBox(
+        width: 440,
+        child: Form(
+          key: _formKey,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'This starts the executable directly with separate arguments. The app does not build a shell command. On Windows, .bat and .cmd launchers may still be handled by the system shell. Its tools are shown to the selected model and each call needs your approval.',
+                  style: TextStyle(color: AppColors.muted, fontSize: 12),
+                ),
+                const SizedBox(height: 15),
+                TextFormField(
+                  key: const Key('settings.mcp.name'),
+                  controller: _name,
+                  autofocus: true,
+                  maxLength: 80,
+                  decoration: const InputDecoration(labelText: 'Server name'),
+                  validator: (value) =>
+                      value == null || value.trim().isEmpty ? 'Required' : null,
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  key: const Key('settings.mcp.command'),
+                  controller: _command,
+                  maxLength: 1024,
+                  decoration: const InputDecoration(
+                    labelText: 'Program or executable path',
+                    hintText: 'npx',
+                  ),
+                  validator: (value) =>
+                      value == null || value.trim().isEmpty ? 'Required' : null,
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  key: const Key('settings.mcp.arguments'),
+                  controller: _arguments,
+                  minLines: 2,
+                  maxLines: 5,
+                  maxLength: 16384,
+                  decoration: const InputDecoration(
+                    labelText: 'Arguments',
+                    hintText: '-y\n@vendor/server',
+                    helperText:
+                        'One argument per line; no shell command is assembled.',
+                  ),
+                  validator: (value) {
+                    final arguments = (value ?? '')
+                        .split(RegExp(r'\r?\n'))
+                        .where((argument) => argument.trim().isNotEmpty);
+                    return arguments.length > 64
+                        ? 'Use no more than 64 arguments.'
+                        : null;
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('settings.mcp.add.save'),
+          onPressed: _save,
+          child: const Text('Add server'),
+        ),
+      ],
     );
   }
 }

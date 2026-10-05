@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -15,6 +16,7 @@ import 'services/project_attachment_loader.dart';
 import 'services/project_tool_executor.dart';
 import 'services/tool_call_loop_guard.dart';
 import 'services/bundled_skill_repository.dart';
+import 'services/mcp_stdio_client.dart';
 import 'screens/app_screens.dart';
 import 'screens/skills_screen.dart';
 import 'screens/settings_screen.dart';
@@ -28,6 +30,8 @@ class PenguinCodeApp extends StatelessWidget {
     this.initialProjects = const [],
     this.chatClient,
     this.attachmentPicker,
+    this.mcpTransportFactory,
+    this.dataStore,
   });
 
   final List<Project> initialProjects;
@@ -36,6 +40,8 @@ class PenguinCodeApp extends StatelessWidget {
     Project project,
     List<ChatAttachment> alreadyAttached,
   )? attachmentPicker;
+  final McpTransportFactory? mcpTransportFactory;
+  final AgentDataStore? dataStore;
 
   @override
   Widget build(BuildContext context) {
@@ -47,6 +53,8 @@ class PenguinCodeApp extends StatelessWidget {
         initialProjects: initialProjects,
         chatClient: chatClient,
         attachmentPicker: attachmentPicker,
+        mcpTransportFactory: mcpTransportFactory,
+        dataStore: dataStore,
       ),
     );
   }
@@ -58,6 +66,8 @@ class PenguinHomeShell extends StatefulWidget {
     this.initialProjects = const [],
     this.chatClient,
     this.attachmentPicker,
+    this.mcpTransportFactory,
+    this.dataStore,
   });
 
   final List<Project> initialProjects;
@@ -66,6 +76,8 @@ class PenguinHomeShell extends StatefulWidget {
     Project project,
     List<ChatAttachment> alreadyAttached,
   )? attachmentPicker;
+  final McpTransportFactory? mcpTransportFactory;
+  final AgentDataStore? dataStore;
 
   @override
   State<PenguinHomeShell> createState() => _PenguinHomeShellState();
@@ -79,6 +91,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       'penguin_code.auto_remember_preferences';
   static const _autoSelectSkillsPreferenceKey =
       'penguin_code.auto_select_skills';
+  static const _mcpServersPreferenceKey = 'penguin_code.mcp_servers';
 
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _sidebarOpen = true;
@@ -87,6 +100,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final List<Project> _projects = [];
   final List<ChatConversation> _chats = [];
   final List<ProviderProfile> _providers = [];
+  final List<McpServerProfile> _mcpServers = [];
   final Set<String> _refreshingProviderIds = {};
   final Set<String> _installedSkillIds = {};
   final Set<String> _draftActiveSkillIds = {};
@@ -99,10 +113,16 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final Map<String, Completer<PlanReviewResponse>> _pendingPlanReviews = {};
   late final OpenAiCompatibleChatClient _chatClient;
   final _attachmentLoader = const ProjectAttachmentLoader();
-  final _dataStore = AgentDataStore();
+  late final AgentDataStore _dataStore = widget.dataStore ?? AgentDataStore();
   final _outputExecutor = ChatOutputExecutor();
   final _skillRepository = BundledSkillRepository();
   final _skillPreferences = SharedPreferencesAsync();
+  late final McpServerManager _mcpServerManager = McpServerManager(
+    transportFactory: widget.mcpTransportFactory,
+    onChanged: () {
+      if (mounted) setState(() {});
+    },
+  );
   final Map<String, Timer> _chatSaveTimers = {};
   int _messageId = 0;
   String? _activeChatId;
@@ -127,6 +147,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     _chatClient = widget.chatClient ?? OpenAiCompatibleChatClient();
     unawaited(_initializeLocalData());
     unawaited(_loadSkillLibrary());
+    unawaited(_loadMcpServers());
   }
 
   @override
@@ -141,7 +162,66 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       unawaited(_persistChat(chatId));
     }
     _chatClient.close();
+    unawaited(_mcpServerManager.close());
     super.dispose();
+  }
+
+  Future<void> _loadMcpServers() async {
+    try {
+      final saved = await _skillPreferences.getString(_mcpServersPreferenceKey);
+      if (saved == null || saved.isEmpty) return;
+      final decoded = jsonDecode(saved);
+      if (decoded is! List) return;
+      final profiles = decoded
+          .map(McpServerProfile.fromJson)
+          .whereType<McpServerProfile>()
+          .take(McpServerManager.maxConnectedServers)
+          .toList(growable: false);
+      if (!mounted) return;
+      setState(() => _mcpServers.addAll(profiles));
+      for (final server in profiles.where((server) => server.enabled)) {
+        await _mcpServerManager.connect(server);
+      }
+    } catch (_) {
+      if (mounted)
+        _showNotice('Saved MCP server settings could not be loaded.');
+    }
+  }
+
+  Future<void> _saveMcpServers() async {
+    await _skillPreferences.setString(
+      _mcpServersPreferenceKey,
+      jsonEncode(_mcpServers.map((server) => server.toJson()).toList()),
+    );
+  }
+
+  void _addMcpServer(McpServerProfile server) {
+    setState(() => _mcpServers.add(server));
+    unawaited(_saveMcpServers());
+    _showNotice('MCP server added. Connect it to expose its tools in chat.');
+  }
+
+  void _toggleMcpServer(McpServerProfile server, bool enabled) {
+    final index = _mcpServers.indexWhere((item) => item.id == server.id);
+    if (index < 0) return;
+    final updated = _mcpServers[index].copyWith(enabled: enabled);
+    setState(() => _mcpServers[index] = updated);
+    unawaited(_saveMcpServers());
+    if (enabled) {
+      unawaited(_mcpServerManager.connect(updated));
+    } else {
+      unawaited(_mcpServerManager.disconnect(server.id));
+    }
+  }
+
+  void _deleteMcpServer(McpServerProfile server) {
+    setState(() => _mcpServers.removeWhere((item) => item.id == server.id));
+    unawaited(_mcpServerManager.disconnect(server.id));
+    unawaited(_saveMcpServers());
+  }
+
+  void _refreshMcpServer(McpServerProfile server) {
+    unawaited(_mcpServerManager.refresh(server.id));
   }
 
   Future<void> _initializeLocalData() async {
@@ -463,6 +543,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       _permissionMode != AgentPermissionMode.chatOnly;
 
   bool _requiresToolApproval(AgentPermissionMode mode, String toolName) {
+    if (toolName.startsWith('mcp_tool_')) return true;
     if (mode == AgentPermissionMode.fullAccess) return false;
     if (toolName == 'run_command') return false;
     if (toolName == 'save_chat_output') return true;
@@ -476,6 +557,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     ChatOutputExecutor outputTools,
     bool fullAccess,
   ) =>
+      _mcpServerManager.supportsTool(toolName) ||
       outputTools.supports(toolName) ||
       projectTools.supports(toolName, fullAccess: fullAccess);
 
@@ -1141,6 +1223,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           'Save requested deliverables in this chat\'s outputs folder with save_chat_output: $outputDirectory. Do not put generated deliverables in the working directory unless the user asks.',
         if (skillInstructions != null) skillInstructions,
       ].join('\n\n');
+      final mcpAgentTools = _mcpServerManager.agentTools;
       for (var toolRound = 0; toolRound < 6; toolRound++) {
         if (stop.isCompleted) return;
         final toolCalls = <AgentToolCall>[];
@@ -1156,6 +1239,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           planMode: isPlanMode,
           reasoningEffort: reasoningEffort,
           skillInstructions: contextInstructions,
+          extraTools: [
+            for (final tool in mcpAgentTools) tool.toOpenAiTool(),
+          ],
         )) {
           if (!mounted) return;
           switch (event) {
@@ -1468,20 +1554,25 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
               content: '',
               actionStatus: ToolActionStatus.running,
             );
-            toolResult = outputExecutor.supports(toolCall.name)
-                ? await outputExecutor.execute(
-                    outputDirectory: outputDirectory,
-                    call: toolCall,
+            toolResult = _mcpServerManager.supportsTool(toolCall.name)
+                ? await _mcpServerManager.executeTool(
+                    toolCall.name,
+                    toolCall.arguments,
                   )
-                : await projectToolExecutor.execute(
-                    projectPath: effectiveProjectPath,
-                    call: toolCall,
-                    fullAccess: fullAccess && !isPlanMode,
-                    allowComputerPaths:
-                        permissionMode != AgentPermissionMode.chatOnly &&
-                            !isPlanMode,
-                    abortTrigger: stop.future,
-                  );
+                : outputExecutor.supports(toolCall.name)
+                    ? await outputExecutor.execute(
+                        outputDirectory: outputDirectory,
+                        call: toolCall,
+                      )
+                    : await projectToolExecutor.execute(
+                        projectPath: effectiveProjectPath,
+                        call: toolCall,
+                        fullAccess: fullAccess && !isPlanMode,
+                        allowComputerPaths:
+                            permissionMode != AgentPermissionMode.chatOnly &&
+                                !isPlanMode,
+                        abortTrigger: stop.future,
+                      );
             actionStatus = toolResult.startsWith('Tool error:')
                 ? ToolActionStatus.failed
                 : toolResult.startsWith('Tool cancelled:')
@@ -1952,6 +2043,16 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                   skillsDirectoryPath: _localDataReady
                                       ? _dataStore.skillsDirectory.path
                                       : null,
+                                  mcpServers: List.unmodifiable(_mcpServers),
+                                  mcpServerStatuses: {
+                                    for (final server in _mcpServers)
+                                      server.id: _mcpServerManager
+                                          .statusFor(server.id),
+                                  },
+                                  onAddMcpServer: _addMcpServer,
+                                  onToggleMcpServer: _toggleMcpServer,
+                                  onDeleteMcpServer: _deleteMcpServer,
+                                  onRefreshMcpServer: _refreshMcpServer,
                                 ),
                             },
                           ),

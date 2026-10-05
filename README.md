@@ -26,6 +26,7 @@ Penguin Code is an early native desktop prototype with a working text chat for O
 - Optional Plan first toggle for read-only exploration, plan feedback, approval, and cancellation
 - Skills library with the bundled Material Design 3 skill and per-chat activation
 - Persistent local conversations, editable agent memories, and relevant skill matching
+- Local MCP servers over stdio, with tool discovery, pagination, and per-call approval
 - Per-chat workspace and output folders for chats without a selected project
 - Computer-wide file tools in every access mode, with mode-based approvals and safeguards for paths, file types, output size, and tool rounds
 - Approval-gated, unique-match project file edits with inline diffs
@@ -51,6 +52,8 @@ Full access requires an explicit confirmation. It lets the connected model read 
 
 Plan first is an optional per-chat toggle, separate from computer access, for requests that benefit from review before implementation. Turn it on in the composer to have a tool-capable model inspect the chat workspace or selected project and submit a plan before it can make changes. Absolute paths outside that workspace remain unavailable during planning. File edits and commands are excluded from the offered tools and rejected if the model attempts them. Approve the plan to continue with the current computer access permissions, request changes with feedback, or cancel without applying changes. Plan first requires file access and a model that supports tools. Its state is saved with the conversation.
 
+Open **Settings → MCP servers** to configure local MCP programs. Enter the executable and its arguments separately; arguments are one per line, and Penguin Code does not assemble a shell command. Windows may still dispatch `.bat` and `.cmd` launchers through the system shell. Enable **Connect server** to start it now and again when Penguin Code launches. The app negotiates MCP over newline-delimited JSON-RPC on `stdio`, discovers tools (up to 48 per server and 48 total), and refreshes the list on server notifications or when requested. Connected tool schemas and results are sent to the selected model. Every MCP call requires a separate **Approve once** action, including while Full access is enabled. MCP calls are unavailable in Chat only and Plan first. Calls time out after 30 seconds; protocol messages are limited to 1 MiB, tool argument payloads and individual schemas to 64 KiB, exposed schemas together to 128 KiB, and model-visible results to 24,000 characters. Disconnect or remove a server to stop its process and withdraw its tools. Only connect programs you trust: they run locally as your user and inherit Penguin Code's process environment. Streamable HTTP and other remote MCP transports are not included yet.
+
 You can also attach up to four source or text files per message, with a 64 KiB limit per file and 128 KiB total. Files are selected explicitly, and their paths and contents are sent to the configured provider with your message. Parallel subagents remain future work.
 
 ## Configure a provider
@@ -74,4 +77,4 @@ Use `-d macos` or `-d linux` on the matching development platform. Flutter can t
 flutter test tests
 ```
 
-The tests cover the app shell, session-only provider setup, request formatting, streaming responses, endpoint validation, cancellation, attachment safety limits, Plan first review and permission gates, and chat interaction using fake HTTP responses. No live API key or provider is required.
+The tests cover the app shell, session-only provider setup, request formatting, streaming responses, endpoint validation, cancellation, attachment safety limits, Plan first review and permission gates, MCP JSON-RPC discovery and tool routing, and chat interaction using fake HTTP and MCP transports. No live API key, provider, or MCP server is required.

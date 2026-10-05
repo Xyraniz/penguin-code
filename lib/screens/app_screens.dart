@@ -1289,14 +1289,21 @@ class _ToolActionCard extends StatelessWidget {
         onCancel: onCancelPlan,
       );
     }
-    final name = switch (message.toolName) {
-      'list_project_files' => 'List computer files',
-      'search_project_files' => 'Search computer files',
-      'read_project_file' => 'Read a file',
-      'edit_project_file' => 'Edit a file',
-      'run_command' => 'Run a command',
-      _ => 'Computer file action',
-    };
+    final isMcpTool = message.toolName?.startsWith('mcp_tool_') ?? false;
+    final mcpToolName = message.toolName?.replaceFirst(
+      RegExp(r'^mcp_tool_\d+_'),
+      '',
+    );
+    final name = isMcpTool
+        ? 'MCP tool · ${mcpToolName ?? 'external'}'
+        : switch (message.toolName) {
+            'list_project_files' => 'List computer files',
+            'search_project_files' => 'Search computer files',
+            'read_project_file' => 'Read a file',
+            'edit_project_file' => 'Edit a file',
+            'run_command' => 'Run a command',
+            _ => 'Computer file action',
+          };
     final isEdit = message.toolName == 'edit_project_file';
     final target = message.toolArguments['command'] ??
         message.toolArguments['file_path'] ??
@@ -1308,13 +1315,17 @@ class _ToolActionCard extends StatelessWidget {
       'list_project_files' => AppIcons.folderOpenRounded,
       'search_project_files' => AppIcons.searchRounded,
       'run_command' => AppIcons.terminalRounded,
+      _ when isMcpTool => AppIcons.hubOutlined,
       _ => AppIcons.fileCodeOutlined,
     };
     final statusLabel = switch (actionStatus) {
       ToolActionStatus.awaitingApproval => 'Approval needed',
       ToolActionStatus.awaitingPlanReview => 'Review needed',
-      ToolActionStatus.running =>
-        message.toolName == 'run_command' ? 'Running command' : 'Working',
+      ToolActionStatus.running => message.toolName == 'run_command'
+          ? 'Running command'
+          : isMcpTool
+              ? 'Running MCP tool'
+              : 'Working',
       ToolActionStatus.completed => 'Completed',
       ToolActionStatus.planApproved => 'Plan approved',
       ToolActionStatus.planRevisionRequested => 'Plan revision requested',
@@ -1394,9 +1405,11 @@ class _ToolActionCard extends StatelessWidget {
                   Padding(
                     padding: const EdgeInsets.only(top: 10),
                     child: Text(
-                      isEdit
-                          ? 'Review the proposed replacement. It applies only if the file was read and has not changed since then.'
-                          : 'This request can access supported files anywhere on your computer. The selected access mode controls approval.',
+                      isMcpTool
+                          ? 'This tool will run in the connected local MCP server. Review the request before every call.'
+                          : isEdit
+                              ? 'Review the proposed replacement. It applies only if the file was read and has not changed since then.'
+                              : 'This request can access supported files anywhere on your computer. The selected access mode controls approval.',
                       style: const TextStyle(
                         color: AppColors.muted,
                         fontSize: 11,

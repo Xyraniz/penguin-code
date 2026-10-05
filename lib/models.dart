@@ -1,6 +1,76 @@
 enum AppPage { chat, agents, changes, skills, settings }
 
-enum SettingsTab { general, models, tools, memory, shortcuts }
+enum SettingsTab { general, models, tools, mcp, memory, shortcuts }
+
+class McpServerProfile {
+  const McpServerProfile({
+    required this.id,
+    required this.name,
+    required this.command,
+    this.arguments = const [],
+    this.enabled = false,
+  });
+
+  final String id;
+  final String name;
+  final String command;
+  final List<String> arguments;
+  final bool enabled;
+
+  McpServerProfile copyWith({bool? enabled}) => McpServerProfile(
+        id: id,
+        name: name,
+        command: command,
+        arguments: arguments,
+        enabled: enabled ?? this.enabled,
+      );
+
+  Map<String, Object?> toJson() => {
+        'id': id,
+        'name': name,
+        'command': command,
+        'arguments': arguments,
+        'enabled': enabled,
+      };
+
+  static McpServerProfile? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final id = value['id'];
+    final name = value['name'];
+    final command = value['command'];
+    final arguments = value['arguments'];
+    final parsedArguments = arguments == null
+        ? const <String>[]
+        : arguments is List && arguments.every((item) => item is String)
+            ? List<String>.unmodifiable(arguments.cast<String>())
+            : null;
+    if (id is! String ||
+        id.isEmpty ||
+        name is! String ||
+        name.trim().isEmpty ||
+        name.trim().length > 80 ||
+        command is! String ||
+        command.trim().isEmpty ||
+        command.trim().length > 1024 ||
+        command.contains('\n') ||
+        command.contains('\r') ||
+        parsedArguments == null) {
+      return null;
+    }
+    if (parsedArguments.length > 64 ||
+        parsedArguments.fold<int>(0, (length, value) => length + value.length) >
+            16384) {
+      return null;
+    }
+    return McpServerProfile(
+      id: id,
+      name: name.trim(),
+      command: command.trim(),
+      arguments: parsedArguments,
+      enabled: value['enabled'] == true,
+    );
+  }
+}
 
 enum ChatMessageRole { user, assistant, tool }
 
