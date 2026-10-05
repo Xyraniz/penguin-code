@@ -33,6 +33,7 @@ class SettingsScreen extends StatelessWidget {
     required this.userProfileText,
     required this.agentMemoryText,
     required this.memoriesEnabled,
+    required this.pastChatSearchEnabled,
     required this.autoRememberPreferences,
     required this.autoSelectSkills,
     required this.dataDirectoryPath,
@@ -40,6 +41,7 @@ class SettingsScreen extends StatelessWidget {
     required this.onSaveUserProfile,
     required this.onSaveAgentMemory,
     required this.onMemoriesEnabledChanged,
+    required this.onPastChatSearchEnabledChanged,
     required this.onAutoRememberChanged,
     required this.onAutoSelectSkillsChanged,
     required this.skillsDirectoryPath,
@@ -74,6 +76,7 @@ class SettingsScreen extends StatelessWidget {
   final String userProfileText;
   final String agentMemoryText;
   final bool memoriesEnabled;
+  final bool pastChatSearchEnabled;
   final bool autoRememberPreferences;
   final bool autoSelectSkills;
   final String? dataDirectoryPath;
@@ -81,6 +84,7 @@ class SettingsScreen extends StatelessWidget {
   final Future<void> Function(String) onSaveUserProfile;
   final Future<void> Function(String) onSaveAgentMemory;
   final ValueChanged<bool> onMemoriesEnabledChanged;
+  final ValueChanged<bool> onPastChatSearchEnabledChanged;
   final ValueChanged<bool> onAutoRememberChanged;
   final ValueChanged<bool> onAutoSelectSkillsChanged;
   final String? skillsDirectoryPath;
@@ -190,6 +194,7 @@ class SettingsScreen extends StatelessWidget {
           userProfileText: userProfileText,
           agentMemoryText: agentMemoryText,
           memoriesEnabled: memoriesEnabled,
+          pastChatSearchEnabled: pastChatSearchEnabled,
           autoRememberPreferences: autoRememberPreferences,
           autoSelectSkills: autoSelectSkills,
           dataDirectoryPath: dataDirectoryPath,
@@ -198,6 +203,7 @@ class SettingsScreen extends StatelessWidget {
           onSaveUserProfile: onSaveUserProfile,
           onSaveAgentMemory: onSaveAgentMemory,
           onMemoriesEnabledChanged: onMemoriesEnabledChanged,
+          onPastChatSearchEnabledChanged: onPastChatSearchEnabledChanged,
           onAutoRememberChanged: onAutoRememberChanged,
           onAutoSelectSkillsChanged: onAutoSelectSkillsChanged,
         ),
@@ -319,6 +325,7 @@ class _MemorySettings extends StatefulWidget {
     required this.userProfileText,
     required this.agentMemoryText,
     required this.memoriesEnabled,
+    required this.pastChatSearchEnabled,
     required this.autoRememberPreferences,
     required this.autoSelectSkills,
     required this.dataDirectoryPath,
@@ -327,6 +334,7 @@ class _MemorySettings extends StatefulWidget {
     required this.onSaveUserProfile,
     required this.onSaveAgentMemory,
     required this.onMemoriesEnabledChanged,
+    required this.onPastChatSearchEnabledChanged,
     required this.onAutoRememberChanged,
     required this.onAutoSelectSkillsChanged,
   });
@@ -334,6 +342,7 @@ class _MemorySettings extends StatefulWidget {
   final String userProfileText;
   final String agentMemoryText;
   final bool memoriesEnabled;
+  final bool pastChatSearchEnabled;
   final bool autoRememberPreferences;
   final bool autoSelectSkills;
   final String? dataDirectoryPath;
@@ -342,6 +351,7 @@ class _MemorySettings extends StatefulWidget {
   final Future<void> Function(String) onSaveUserProfile;
   final Future<void> Function(String) onSaveAgentMemory;
   final ValueChanged<bool> onMemoriesEnabledChanged;
+  final ValueChanged<bool> onPastChatSearchEnabledChanged;
   final ValueChanged<bool> onAutoRememberChanged;
   final ValueChanged<bool> onAutoSelectSkillsChanged;
 
@@ -485,6 +495,24 @@ class _MemorySettingsState extends State<_MemorySettings> {
           onSave: widget.isLocalDataReady && !_savingAgentMemory
               ? _saveAgentMemory
               : null,
+        ),
+        const SizedBox(height: 13),
+        _SettingsCard(
+          title: 'Past conversation search',
+          description:
+              'The agent can search saved chats when you ask it to recall something. Matching excerpts are sent to your selected model.',
+          child: SwitchListTile.adaptive(
+            key: const Key('settings.historySearch.enabled'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Allow the agent to search past chats'),
+            subtitle: const Text(
+              'Off by default. Conversation search in the chat list stays local.',
+            ),
+            value: widget.pastChatSearchEnabled,
+            onChanged: widget.isLocalDataReady
+                ? widget.onPastChatSearchEnabledChanged
+                : null,
+          ),
         ),
         const SizedBox(height: 13),
         _SettingsCard(

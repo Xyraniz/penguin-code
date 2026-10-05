@@ -1299,6 +1299,7 @@ class _ToolActionCard extends StatelessWidget {
         : switch (message.toolName) {
             'list_project_files' => 'List computer files',
             'search_project_files' => 'Search computer files',
+            'search_past_chats' => 'Search past chats',
             'read_project_file' => 'Read a file',
             'edit_project_file' => 'Edit a file',
             'run_command' => 'Run a command',
@@ -1315,6 +1316,7 @@ class _ToolActionCard extends StatelessWidget {
     final icon = switch (message.toolName) {
       'list_project_files' => AppIcons.folderOpenRounded,
       'search_project_files' => AppIcons.searchRounded,
+      'search_past_chats' => AppIcons.searchRounded,
       'run_command' => AppIcons.terminalRounded,
       'delegate_task' => AppIcons.hubOutlined,
       _ when isMcpTool => AppIcons.hubOutlined,
@@ -1325,9 +1327,11 @@ class _ToolActionCard extends StatelessWidget {
       ToolActionStatus.awaitingPlanReview => 'Review needed',
       ToolActionStatus.running => message.toolName == 'run_command'
           ? 'Running command'
-          : isMcpTool
-              ? 'Running MCP tool'
-              : 'Working',
+          : message.toolName == 'search_past_chats'
+              ? 'Searching past chats'
+              : isMcpTool
+                  ? 'Running MCP tool'
+                  : 'Working',
       ToolActionStatus.completed => 'Completed',
       ToolActionStatus.planApproved => 'Plan approved',
       ToolActionStatus.planRevisionRequested => 'Plan revision requested',

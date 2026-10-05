@@ -11,6 +11,8 @@ import 'app_theme.dart';
 import 'models.dart';
 import 'services/agent_data_store.dart';
 import 'services/agent_memory_tool.dart';
+import 'services/chat_history_search.dart';
+import 'services/chat_history_tool.dart';
 import 'services/chat_output_executor.dart';
 import 'services/openai_compatible_chat_client.dart';
 import 'services/project_attachment_loader.dart';
@@ -175,6 +177,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   static const _installedSkillsPreferenceKey =
       'penguin_code.installed_skill_ids';
   static const _memoriesEnabledPreferenceKey = 'penguin_code.memories_enabled';
+  static const _pastChatSearchEnabledPreferenceKey =
+      'penguin_code.past_chat_search_enabled';
   static const _autoRememberPreferenceKey =
       'penguin_code.auto_remember_preferences';
   static const _autoSelectSkillsPreferenceKey =
@@ -235,6 +239,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   bool _skillLibraryReady = false;
   bool _isUpdatingSkillLibrary = false;
   bool _memoriesEnabled = true;
+  bool _pastChatSearchEnabled = false;
   bool _autoRememberPreferences = true;
   bool _autoSelectSkills = true;
   bool _subagentsEnabled = false;
@@ -429,6 +434,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       final savedChats = await _dataStore.loadConversations();
       final memoriesEnabled =
           await _skillPreferences.getBool(_memoriesEnabledPreferenceKey);
+      final pastChatSearchEnabled =
+          await _skillPreferences.getBool(_pastChatSearchEnabledPreferenceKey);
       final autoRemember =
           await _skillPreferences.getBool(_autoRememberPreferenceKey);
       final autoSelect =
@@ -439,6 +446,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         _userProfileText = userProfile;
         _agentMemoryText = agentMemory;
         _memoriesEnabled = memoriesEnabled ?? true;
+        _pastChatSearchEnabled = pastChatSearchEnabled ?? false;
         _autoRememberPreferences = autoRemember ?? true;
         _autoSelectSkills = autoSelect ?? true;
         for (final saved in savedChats) {
@@ -615,6 +623,20 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       if (autoRemember != null) _autoRememberPreferences = autoRemember;
       if (autoSelectSkills != null) _autoSelectSkills = autoSelectSkills;
     });
+  }
+
+  Future<void> _setPastChatSearchEnabled(bool enabled) async {
+    try {
+      await _skillPreferences.setBool(
+        _pastChatSearchEnabledPreferenceKey,
+        enabled,
+      );
+    } catch (_) {
+      if (mounted) _showNotice('Could not save this preference locally.');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _pastChatSearchEnabled = enabled);
   }
 
   Future<void> _setResponseDetail(ResponseDetail value) async {
@@ -873,7 +895,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       _permissionMode != AgentPermissionMode.chatOnly;
 
   bool _requiresToolApproval(AgentPermissionMode mode, String toolName) {
-    if (toolName == 'memory') return false;
+    if (toolName == 'memory' || toolName == 'search_past_chats') return false;
     if (toolName.startsWith('mcp_tool_')) return true;
     if (mode == AgentPermissionMode.fullAccess) return false;
     if (toolName == 'run_command') return false;
@@ -1249,7 +1271,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   Future<void> _searchChats() async {
     final chatId = await showDialog<String>(
       context: context,
-      builder: (context) => _ChatSearchDialog(chats: _chats),
+      builder: (context) => _ChatSearchDialog(
+        chats: _chats,
+        messagesByChatId: _messagesByChatId,
+      ),
     );
     if (chatId == null || !mounted) return;
     _selectChat(chatId);
@@ -1625,6 +1650,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         final memoryToolAvailable = _memoriesEnabled &&
             !isPlanMode &&
             _selectedModelProfile?.supportsTools != false;
+        final chatHistoryToolAvailable = _pastChatSearchEnabled &&
+            !isSubagent &&
+            !isPlanMode &&
+            _selectedModelProfile?.supportsTools != false;
         final toolCalls = <AgentToolCall>[];
         var rejectedToolCall = false;
         await for (final event in _chatClient.streamEvents(
@@ -1644,6 +1673,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             ...contextInstructionParts,
             ...projectInstructionSections,
             if (memoryToolAvailable) agentMemoryInstructions,
+            if (chatHistoryToolAvailable) chatHistorySearchInstructions,
           ].join('\n\n'),
           extraTools: [
             for (final tool in mcpAgentTools) tool.toOpenAiTool(),
@@ -1654,9 +1684,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
               _stopSubagentTaskToolDefinition,
             ],
           ],
-          independentTools: memoryToolAvailable
-              ? const [agentMemoryToolDefinition]
-              : const [],
+          independentTools: [
+            if (memoryToolAvailable) agentMemoryToolDefinition,
+            if (chatHistoryToolAvailable) chatHistorySearchToolDefinition,
+          ],
         )) {
           if (!mounted) return;
           switch (event) {
@@ -1714,7 +1745,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                     )
                   : toolCall;
               if (enableProjectTools ||
-                  memoryToolAvailable && scopedToolCall.name == 'memory') {
+                  (memoryToolAvailable && scopedToolCall.name == 'memory') ||
+                  (chatHistoryToolAvailable &&
+                      scopedToolCall.name == 'search_past_chats')) {
                 toolCalls.add(scopedToolCall);
               } else if (!rejectedToolCall) {
                 rejectedToolCall = true;
@@ -2021,6 +2054,62 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
               toolActionStatus: controlFailed
                   ? ToolActionStatus.failed
                   : ToolActionStatus.completed,
+            );
+            _updateChatMessage(chatId, action.id, (_) => completedAction);
+            history.add(completedAction);
+            continue;
+          }
+
+          if (toolCall.name == 'search_past_chats') {
+            String result;
+            var succeeded = false;
+            final query = toolCall.arguments['query'];
+            final requestedLimit = toolCall.arguments['limit'];
+            if (!chatHistoryToolAvailable) {
+              result = 'Past chat search is unavailable for this response.';
+            } else if (loopDecision.blocked || completedToolCalls > 8) {
+              result = 'The search was blocked by the action limit.';
+            } else if (!toolCall.hasValidArguments ||
+                query is! String ||
+                query.trim().isEmpty ||
+                query.length > ChatHistorySearch.maxQueryCharacters) {
+              result =
+                  'Provide a search query of 1 to ${ChatHistorySearch.maxQueryCharacters} characters.';
+            } else {
+              final userMessages = history
+                  .where((message) => message.role == ChatMessageRole.user);
+              final currentUserMessageId =
+                  userMessages.isEmpty ? null : userMessages.last.id;
+              final matches = ChatHistorySearch.search(
+                conversations: _chats,
+                messagesByChatId: _messagesByChatId,
+                query: query,
+                excludedMessageIds: {
+                  if (currentUserMessageId != null) currentUserMessageId,
+                },
+                limit: requestedLimit is int ? requestedLimit : 5,
+                includeTitleMatches: false,
+              ).where((match) => match.message != null).map((match) {
+                final createdAt = match.conversation.createdAt ??
+                    DateTime.fromMillisecondsSinceEpoch(0);
+                return {
+                  'chat_title': match.conversation.title,
+                  'date': createdAt.toIso8601String().substring(0, 10),
+                  'role': match.message!.role.name,
+                  'excerpt': match.excerpt,
+                };
+              }).toList(growable: false);
+              result = matches.isEmpty
+                  ? 'No matching messages were found in saved conversations.'
+                  : jsonEncode(matches);
+              succeeded = true;
+            }
+            final completedAction = action.copyWith(
+              content: result,
+              status: ChatMessageStatus.complete,
+              toolActionStatus: succeeded
+                  ? ToolActionStatus.completed
+                  : ToolActionStatus.failed,
             );
             _updateChatMessage(chatId, action.id, (_) => completedAction);
             history.add(completedAction);
@@ -3221,6 +3310,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                   userProfileText: _userProfileText,
                                   agentMemoryText: _agentMemoryText,
                                   memoriesEnabled: _memoriesEnabled,
+                                  pastChatSearchEnabled: _pastChatSearchEnabled,
                                   autoRememberPreferences:
                                       _autoRememberPreferences,
                                   autoSelectSkills: _autoSelectSkills,
@@ -3232,6 +3322,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                       unawaited(_setMemoryPreference(
                                     memoriesEnabled: enabled,
                                   )),
+                                  onPastChatSearchEnabledChanged: (enabled) =>
+                                      unawaited(
+                                    _setPastChatSearchEnabled(enabled),
+                                  ),
                                   onAutoRememberChanged: (enabled) =>
                                       unawaited(_setMemoryPreference(
                                     autoRemember: enabled,
@@ -3272,9 +3366,13 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
 }
 
 class _ChatSearchDialog extends StatefulWidget {
-  const _ChatSearchDialog({required this.chats});
+  const _ChatSearchDialog({
+    required this.chats,
+    required this.messagesByChatId,
+  });
 
   final List<ChatConversation> chats;
+  final Map<String, List<ChatMessage>> messagesByChatId;
 
   @override
   State<_ChatSearchDialog> createState() => _ChatSearchDialogState();
@@ -3285,10 +3383,17 @@ class _ChatSearchDialogState extends State<_ChatSearchDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final matches = widget.chats
-        .where(
-            (chat) => chat.title.toLowerCase().contains(_query.toLowerCase()))
-        .toList(growable: false);
+    final searchingMessages = _query.isNotEmpty;
+    final matches = searchingMessages
+        ? ChatHistorySearch.search(
+            conversations: widget.chats,
+            messagesByChatId: widget.messagesByChatId,
+            query: _query,
+            limit: 12,
+          )
+        : const <ChatHistoryMatch>[];
+    final resultCount =
+        searchingMessages ? matches.length : widget.chats.length;
     return AlertDialog(
       icon: const Icon(AppIcons.searchRounded, color: AppColors.blue),
       title: const Text('Search conversations'),
@@ -3302,13 +3407,13 @@ class _ChatSearchDialogState extends State<_ChatSearchDialog> {
               key: const Key('chat.search.input'),
               onChanged: (value) => setState(() => _query = value.trim()),
               decoration: const InputDecoration(
-                hintText: 'Search by conversation name',
+                hintText: 'Search conversation names and messages',
                 prefixIcon: Icon(AppIcons.searchRounded),
               ),
             ),
             const SizedBox(height: 10),
             Expanded(
-              child: matches.isEmpty
+              child: resultCount == 0
                   ? const Center(
                       child: Text(
                         'No matching conversations',
@@ -3316,19 +3421,53 @@ class _ChatSearchDialogState extends State<_ChatSearchDialog> {
                       ),
                     )
                   : ListView.builder(
-                      itemCount: matches.length,
+                      itemCount: resultCount,
                       itemBuilder: (context, index) {
-                        final chat = matches[index];
+                        if (!searchingMessages) {
+                          final chat = widget.chats[index];
+                          return ListTile(
+                            leading: const Icon(
+                              AppIcons.chatBubbleOutlineRounded,
+                            ),
+                            title: Text(
+                              chat.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            onTap: () => Navigator.pop(context, chat.id),
+                          );
+                        }
+                        final match = matches[index];
+                        final message = match.message;
+                        final date = match.conversation.createdAt
+                                ?.toIso8601String()
+                                .substring(0, 10) ??
+                            'Saved chat';
+                        final roleLabel = switch (message?.role) {
+                          ChatMessageRole.user => 'You',
+                          ChatMessageRole.assistant => 'Assistant',
+                          _ => 'Conversation title',
+                        };
                         return ListTile(
+                          key: Key(
+                            'chat.search.result.${match.conversation.id}.${message?.id ?? 'title'}',
+                          ),
                           leading: const Icon(
                             AppIcons.chatBubbleOutlineRounded,
                           ),
                           title: Text(
-                            chat.title,
+                            match.conversation.title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                          onTap: () => Navigator.pop(context, chat.id),
+                          subtitle: Text(
+                            '$roleLabel · $date\n${match.excerpt}',
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          isThreeLine: true,
+                          onTap: () =>
+                              Navigator.pop(context, match.conversation.id),
                         );
                       },
                     ),

@@ -1093,6 +1093,142 @@ void main() {
     expect(nextTurnInstructions, contains('Flutter desktop runners'));
   });
 
+  testWidgets('searches past chats locally and exposes an opt-in read tool', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final previousChat = ChatConversation(
+      id: 'history-approval-chat',
+      title: 'Approval policy decision',
+      projectId: null,
+      createdAt: DateTime(2026, 9, 22),
+    );
+    final previousMessages = [
+      const ChatMessage(
+        id: 'history-approval-user',
+        role: ChatMessageRole.user,
+        content:
+            'We decided that edits to project files need approval unless full access is enabled.',
+        status: ChatMessageStatus.complete,
+      ),
+      const ChatMessage(
+        id: 'history-approval-tool',
+        role: ChatMessageRole.tool,
+        content: 'Tool output should never appear in search results.',
+        status: ChatMessageStatus.complete,
+      ),
+    ];
+    await tester.runAsync(
+      () => _testDataStore.saveConversation(previousChat, previousMessages),
+    );
+    expect(
+        await tester.runAsync(_testDataStore.loadConversations), hasLength(1));
+
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        final body =
+            jsonDecode((request as http.Request).body) as Map<String, dynamic>;
+        requests.add(body);
+        final response = switch (responseIndex++) {
+          0 => _sseChunk('Past chat search is off by default.'),
+          1 => _sseToolCall(
+              name: 'search_past_chats',
+              arguments: jsonEncode({
+                'query': 'project files approval',
+                'limit': 4,
+              }),
+              id: 'search-prior-approval',
+            ),
+          _ => _sseChunk('I found the earlier approval decision.'),
+        };
+        return _chatResponse('$response\ndata: [DONE]\n\n');
+      }),
+    );
+
+    await tester.pumpWidget(_testApp(chatClient: client));
+    await tester.pumpAndSettle();
+    await _pumpUntilVisible(tester, find.text('Approval policy decision'));
+
+    await _pressShortcut(tester, LogicalKeyboardKey.keyK);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('chat.search.input')),
+      'project files approval',
+    );
+    await tester.pumpAndSettle();
+    final searchResult = find.byKey(
+      const Key(
+          'chat.search.result.history-approval-chat.history-approval-user'),
+    );
+    expect(searchResult, findsOneWidget);
+    expect(
+      find.textContaining('edits to project files need approval'),
+      findsOneWidget,
+    );
+    await tester.tap(searchResult);
+    await tester.pumpAndSettle();
+    expect(find.text('Approval policy decision'), findsOneWidget);
+
+    await _configureProvider(tester);
+    await _createNewChat(tester);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Give me one short greeting.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.text('Past chat search is off by default.'),
+    );
+    List<String> toolNames(Map<String, dynamic> body) =>
+        (body['tools'] as List<dynamic>)
+            .cast<Map<String, dynamic>>()
+            .map((tool) =>
+                (tool['function'] as Map<String, dynamic>)['name'] as String)
+            .toList();
+
+    expect(toolNames(requests.first), contains('memory'));
+    expect(toolNames(requests.first), isNot(contains('search_past_chats')));
+
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Memories'));
+    await tester.pumpAndSettle();
+    final searchToggle = find.byKey(
+      const Key('settings.historySearch.enabled'),
+    );
+    expect(tester.widget<SwitchListTile>(searchToggle).value, isFalse);
+    await tester.ensureVisible(searchToggle);
+    await tester.pumpAndSettle();
+    await tester.tap(searchToggle);
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(searchToggle).value, isTrue);
+
+    await _createNewChat(tester);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'What did we decide about project file approvals?',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.text('I found the earlier approval decision.'),
+    );
+
+    expect(
+        toolNames(requests[1]), containsAll(['memory', 'search_past_chats']));
+    final toolResults = (requests[2]['messages'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .where((message) => message['role'] == 'tool')
+        .map((message) => message['content'].toString())
+        .join('\n');
+    expect(toolResults, contains('Approval policy decision'));
+    expect(toolResults, contains('edits to project files need approval'));
+    expect(toolResults, isNot(contains('Tool output should never appear')));
+  });
+
   testWidgets('searches discovered models and sends the selected model id', (
     tester,
   ) async {
