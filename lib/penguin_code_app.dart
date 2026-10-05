@@ -10,6 +10,7 @@ import 'models.dart';
 import 'services/openai_compatible_chat_client.dart';
 import 'services/project_attachment_loader.dart';
 import 'services/project_tool_executor.dart';
+import 'services/tool_call_loop_guard.dart';
 import 'screens/app_screens.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/app_icons.dart';
@@ -80,6 +81,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final Map<String, List<ChatMessage>> _messagesByChatId = {};
   final Map<String, Completer<void>> _generationStops = {};
   final Map<String, Completer<bool>> _pendingToolApprovals = {};
+  final Map<String, Completer<PlanReviewResponse>> _pendingPlanReviews = {};
   late final OpenAiCompatibleChatClient _chatClient;
   final _attachmentLoader = const ProjectAttachmentLoader();
   int _messageId = 0;
@@ -88,6 +90,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   String? _selectedProviderId;
   String? _selectedModelId;
   AgentPermissionMode _permissionMode = AgentPermissionMode.askBeforeEachAction;
+  bool _draftPlanMode = false;
 
   @override
   void initState() {
@@ -204,9 +207,71 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     if (approval != null && !approval.isCompleted) approval.complete(approved);
   }
 
-  bool _requiresToolApproval(AgentPermissionMode mode, String toolName) =>
-      toolName == 'edit_project_file' ||
-      mode == AgentPermissionMode.askBeforeEachAction;
+  void _resolvePlanReview(String toolCallId, PlanReviewResponse response) {
+    final review = _pendingPlanReviews[toolCallId];
+    if (review != null && !review.isCompleted) review.complete(response);
+  }
+
+  void _approvePlan(String toolCallId) => _resolvePlanReview(
+        toolCallId,
+        const PlanReviewResponse(decision: PlanReviewDecision.approve),
+      );
+
+  void _keepPlanning(String toolCallId, String feedback) => _resolvePlanReview(
+        toolCallId,
+        PlanReviewResponse(
+          decision: PlanReviewDecision.requestChanges,
+          feedback: feedback,
+        ),
+      );
+
+  void _cancelPlan(String toolCallId) => _resolvePlanReview(
+        toolCallId,
+        const PlanReviewResponse(decision: PlanReviewDecision.cancel),
+      );
+
+  void _setChatPlanMode(String chatId, bool enabled) {
+    final index = _chats.indexWhere((chat) => chat.id == chatId);
+    if (index < 0 || _chats[index].planMode == enabled) return;
+    setState(() => _chats[index] = _chats[index].copyWith(planMode: enabled));
+  }
+
+  void _setPlanMode(bool enabled) {
+    final chatId = _activeChatId;
+    if (chatId == null) {
+      setState(() => _draftPlanMode = enabled);
+      return;
+    }
+    _setChatPlanMode(chatId, enabled);
+  }
+
+  void _changePermissionMode(AgentPermissionMode mode) {
+    setState(() {
+      _permissionMode = mode;
+      if (mode == AgentPermissionMode.chatOnly) {
+        _draftPlanMode = false;
+        if (_activeChatId != null) {
+          final index = _chats.indexWhere((chat) => chat.id == _activeChatId);
+          if (index >= 0) {
+            _chats[index] = _chats[index].copyWith(planMode: false);
+          }
+        }
+      }
+    });
+  }
+
+  bool get _canUsePlanMode =>
+      _activeProject != null &&
+      _selectedProvider != null &&
+      _selectedModelProfile?.supportsTools != false &&
+      _permissionMode != AgentPermissionMode.chatOnly;
+
+  bool _requiresToolApproval(AgentPermissionMode mode, String toolName) {
+    if (mode == AgentPermissionMode.fullAccess) return false;
+    if (toolName == 'run_command') return false;
+    return toolName == 'edit_project_file' ||
+        mode == AgentPermissionMode.askBeforeEachAction;
+  }
 
   void _updateToolAction(
     String toolCallId, {
@@ -316,11 +381,13 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       title: 'New chat',
       projectId: project.id,
+      planMode: _draftPlanMode,
     );
     setState(() {
       _activeProjectId = project.id;
       _activeChatId = chat.id;
       _chats.insert(0, chat);
+      _draftPlanMode = false;
       _page = AppPage.chat;
     });
     _scaffoldKey.currentState?.closeDrawer();
@@ -568,9 +635,16 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           'Wait for the current response to stop before sending again.');
       return false;
     }
+    if ((_activeChat?.planMode ?? _draftPlanMode) && !_canUsePlanMode) {
+      _showNotice(
+        'Plan first needs a tool-capable model and computer access. Update those settings or turn Plan first off.',
+      );
+      return false;
+    }
     if (_activeChatId == null) _startChat(project);
     final reasoningEffort = _selectedReasoningEffortId;
     final chatId = _activeChatId!;
+    final planMode = _activeChat?.planMode ?? _draftPlanMode;
     final existingMessages = _messagesByChatId[chatId] ?? const <ChatMessage>[];
     final userMessage = ChatMessage(
       id: _newMessageId(),
@@ -615,6 +689,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         history: history,
         projectPath: project.path,
         permissionMode: _permissionMode,
+        planMode: planMode,
         reasoningEffort: reasoningEffort,
         enableProjectTools: _permissionMode != AgentPermissionMode.chatOnly &&
             _selectedModelProfile?.supportsTools != false,
@@ -634,13 +709,17 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     required List<ChatMessage> history,
     required String projectPath,
     required AgentPermissionMode permissionMode,
+    required bool planMode,
     required bool enableProjectTools,
     required String? reasoningEffort,
     required Completer<void> stop,
   }) async {
     var activeAssistantMessageId = assistantMessageId;
     var completedToolCalls = 0;
+    var isPlanMode = planMode;
+    final fullAccess = permissionMode == AgentPermissionMode.fullAccess;
     final projectToolExecutor = ProjectToolExecutor();
+    final toolCallLoopGuard = ToolCallLoopGuard();
     try {
       for (var toolRound = 0; toolRound < 6; toolRound++) {
         if (stop.isCompleted) return;
@@ -651,6 +730,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           history: history,
           abortTrigger: stop.future,
           enableProjectTools: enableProjectTools,
+          fullAccess: fullAccess,
+          allowComputerPaths:
+              permissionMode != AgentPermissionMode.chatOnly && !isPlanMode,
+          planMode: isPlanMode,
           reasoningEffort: reasoningEffort,
         )) {
           if (!mounted) return;
@@ -698,7 +781,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             .firstWhere((message) => message.id == activeAssistantMessageId);
         final assistantToolMessage = currentAssistant.copyWith(
           content: currentAssistant.content.isEmpty
-              ? 'Checking project files.'
+              ? 'Checking files.'
               : currentAssistant.content,
           status: ChatMessageStatus.complete,
           toolCalls: List.unmodifiable(toolCalls),
@@ -713,32 +796,193 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         for (final toolCall in toolCalls) {
           if (stop.isCompleted) return;
           completedToolCalls++;
+          final loopDecision = toolCallLoopGuard.inspect(toolCall);
+          final isPlanSubmission = toolCall.name == 'submit_plan';
+          final proposedPlan = toolCall.arguments['plan'];
+          final validPlan = proposedPlan is String &&
+              proposedPlan.trim().isNotEmpty &&
+              proposedPlan.length <= 32768 &&
+              RegExp(r'^#{1,6}\s+\S').hasMatch(proposedPlan.trimLeft());
+          final reviewCanStart = isPlanSubmission &&
+              isPlanMode &&
+              toolCall.hasValidArguments &&
+              validPlan &&
+              !loopDecision.blocked &&
+              completedToolCalls <= 8;
           final action = ChatMessage(
             id: _newMessageId(),
             role: ChatMessageRole.tool,
             content: '',
-            status: _requiresToolApproval(permissionMode, toolCall.name)
+            status: reviewCanStart
                 ? ChatMessageStatus.awaitingApproval
-                : ChatMessageStatus.complete,
+                : !loopDecision.blocked &&
+                        _requiresToolApproval(permissionMode, toolCall.name)
+                    ? ChatMessageStatus.awaitingApproval
+                    : ChatMessageStatus.complete,
             toolCallId: toolCall.id,
             toolName: toolCall.name,
             toolArguments: toolCall.arguments,
-            toolActionStatus:
-                _requiresToolApproval(permissionMode, toolCall.name) &&
-                        toolCall.hasValidArguments &&
-                        projectToolExecutor.supports(toolCall.name)
-                    ? ToolActionStatus.awaitingApproval
-                    : ToolActionStatus.running,
+            toolActionStatus: reviewCanStart
+                ? ToolActionStatus.awaitingPlanReview
+                : loopDecision.blocked
+                    ? ToolActionStatus.loopBlocked
+                    : _requiresToolApproval(permissionMode, toolCall.name) &&
+                            toolCall.hasValidArguments &&
+                            projectToolExecutor.supports(
+                              toolCall.name,
+                              fullAccess: fullAccess,
+                            )
+                        ? ToolActionStatus.awaitingApproval
+                        : ToolActionStatus.running,
           );
           _appendChatMessage(chatId, action);
 
-          var approved =
-              permissionMode == AgentPermissionMode.autoApproveProjectReads &&
-                  toolCall.name != 'edit_project_file';
+          if (isPlanSubmission) {
+            final withinToolLimit = completedToolCalls <= 8;
+            if (loopDecision.blocked) {
+              const result =
+                  'Repeated plan submission stopped before review after four identical attempts in this response.';
+              _updateToolAction(
+                toolCall.id,
+                content: result,
+                actionStatus: ToolActionStatus.loopBlocked,
+              );
+              history.add(action.copyWith(
+                content: result,
+                status: ChatMessageStatus.complete,
+                toolActionStatus: ToolActionStatus.loopBlocked,
+              ));
+              continue;
+            }
+            if (!isPlanMode) {
+              const result =
+                  'Plan review is only available when Plan first is enabled. No computer action was run.';
+              _updateToolAction(
+                toolCall.id,
+                content: result,
+                actionStatus: ToolActionStatus.failed,
+              );
+              history.add(action.copyWith(
+                content: result,
+                status: ChatMessageStatus.complete,
+                toolActionStatus: ToolActionStatus.failed,
+              ));
+              continue;
+            }
+            if (!toolCall.hasValidArguments || !validPlan) {
+              const result =
+                  'The plan must be valid Markdown with a heading. No project action was run.';
+              _updateToolAction(
+                toolCall.id,
+                content: result,
+                actionStatus: ToolActionStatus.failed,
+              );
+              history.add(action.copyWith(
+                content: result,
+                status: ChatMessageStatus.complete,
+                toolActionStatus: ToolActionStatus.failed,
+              ));
+              continue;
+            }
+            if (!withinToolLimit) {
+              const result =
+                  'The agent action limit for this response was reached. The plan was not reviewed.';
+              _updateToolAction(
+                toolCall.id,
+                content: result,
+                actionStatus: ToolActionStatus.failed,
+              );
+              history.add(action.copyWith(
+                content: result,
+                status: ChatMessageStatus.complete,
+                toolActionStatus: ToolActionStatus.failed,
+              ));
+              continue;
+            }
+
+            final review = Completer<PlanReviewResponse>();
+            _pendingPlanReviews[toolCall.id] = review;
+            final response = await Future.any<PlanReviewResponse>([
+              review.future,
+              stop.future.then((_) => const PlanReviewResponse(
+                    decision: PlanReviewDecision.cancel,
+                  )),
+            ]);
+            _pendingPlanReviews.remove(toolCall.id);
+            if (stop.isCompleted) {
+              _updateToolAction(
+                toolCall.id,
+                content: 'Plan review was cancelled when generation stopped.',
+                actionStatus: ToolActionStatus.cancelled,
+              );
+              return;
+            }
+
+            if (response.decision == PlanReviewDecision.approve) {
+              isPlanMode = false;
+              _setChatPlanMode(chatId, false);
+              const result =
+                  'The user approved the plan. Continue with implementation now, following the selected computer access permissions.';
+              _updateToolAction(
+                toolCall.id,
+                content: result,
+                actionStatus: ToolActionStatus.planApproved,
+              );
+              history.add(action.copyWith(
+                content: result,
+                status: ChatMessageStatus.complete,
+                toolActionStatus: ToolActionStatus.planApproved,
+              ));
+            } else if (response.decision == PlanReviewDecision.requestChanges) {
+              final feedback = response.feedback.trim().isEmpty
+                  ? 'Revise the plan to better match the original request.'
+                  : response.feedback.trim();
+              final result =
+                  'The user requested plan changes. Revise the plan and submit it for review again. User feedback: $feedback';
+              _updateToolAction(
+                toolCall.id,
+                content: result,
+                actionStatus: ToolActionStatus.planRevisionRequested,
+              );
+              history.add(action.copyWith(
+                content: result,
+                status: ChatMessageStatus.complete,
+                toolActionStatus: ToolActionStatus.planRevisionRequested,
+              ));
+            } else {
+              _setChatPlanMode(chatId, false);
+              const result =
+                  'The user cancelled the plan. No project changes were made.';
+              _updateToolAction(
+                toolCall.id,
+                content: result,
+                actionStatus: ToolActionStatus.cancelled,
+              );
+              return;
+            }
+            continue;
+          }
+
+          final blockedDuringPlanning = isPlanMode &&
+              !const {
+                'list_project_files',
+                'search_project_files',
+                'read_project_file',
+              }.contains(toolCall.name);
+
+          var approved = fullAccess ||
+              (permissionMode == AgentPermissionMode.autoApproveProjectReads &&
+                  toolCall.name != 'edit_project_file');
           final withinToolLimit = completedToolCalls <= 8;
-          if (_requiresToolApproval(permissionMode, toolCall.name) &&
+          if (!isPlanSubmission &&
+              !blockedDuringPlanning &&
+              !loopDecision.blocked &&
+              _requiresToolApproval(permissionMode, toolCall.name) &&
               toolCall.hasValidArguments &&
-              projectToolExecutor.supports(toolCall.name) &&
+              projectToolExecutor.supports(
+                toolCall.name,
+                fullAccess: fullAccess,
+              ) &&
               withinToolLimit) {
             final approval = Completer<bool>();
             _pendingToolApprovals[toolCall.id] = approval;
@@ -760,24 +1004,35 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
 
           final String toolResult;
           final ToolActionStatus actionStatus;
-          if (!toolCall.hasValidArguments) {
+          if (blockedDuringPlanning) {
             toolResult =
-                'The tool arguments were invalid. No project files were accessed.';
+                'This action is unavailable while Plan first is active. Only listing, searching, and reading are allowed before the user approves a plan.';
+            actionStatus = ToolActionStatus.denied;
+          } else if (loopDecision.blocked) {
+            toolResult =
+                'Repeated tool call stopped before execution after four identical attempts in this response. Try a different action or send a new message to reset the limit.';
+            actionStatus = ToolActionStatus.loopBlocked;
+          } else if (!toolCall.hasValidArguments) {
+            toolResult =
+                'The tool arguments were invalid. No computer files were accessed.';
             actionStatus = ToolActionStatus.failed;
-          } else if (!projectToolExecutor.supports(toolCall.name)) {
+          } else if (!projectToolExecutor.supports(
+            toolCall.name,
+            fullAccess: fullAccess,
+          )) {
             toolResult = 'The requested project tool is not available.';
             actionStatus = ToolActionStatus.failed;
           } else if (!withinToolLimit) {
             toolResult =
-                'The project action limit for this response was reached. No project files were accessed.';
+                'The agent action limit for this response was reached. No action was run.';
             actionStatus = ToolActionStatus.failed;
           } else if (!approved) {
             toolResult =
-                'The user denied this project access request. No project files were accessed.';
+                'The user denied this computer access request. No files were accessed.';
             actionStatus = ToolActionStatus.denied;
           } else if (permissionMode == AgentPermissionMode.chatOnly) {
             toolResult =
-                'Project access is disabled. No project files were accessed.';
+                'Computer file access is disabled. No files were accessed.';
             actionStatus = ToolActionStatus.denied;
           } else {
             _updateToolAction(
@@ -788,10 +1043,16 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             toolResult = await projectToolExecutor.execute(
               projectPath: projectPath,
               call: toolCall,
+              fullAccess: fullAccess && !isPlanMode,
+              allowComputerPaths:
+                  permissionMode != AgentPermissionMode.chatOnly && !isPlanMode,
+              abortTrigger: stop.future,
             );
             actionStatus = toolResult.startsWith('Tool error:')
                 ? ToolActionStatus.failed
-                : ToolActionStatus.completed;
+                : toolResult.startsWith('Tool cancelled:')
+                    ? ToolActionStatus.cancelled
+                    : ToolActionStatus.completed;
           }
           if (!mounted) return;
           final completedAction = action.copyWith(
@@ -810,7 +1071,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
               id: _newMessageId(),
               role: ChatMessageRole.assistant,
               content:
-                  'The project action limit for this response was reached. Send a follow-up message to continue.',
+                  'The agent action limit for this response was reached. Send a follow-up message to continue.',
               status: ChatMessageStatus.complete,
             ),
           );
@@ -875,11 +1136,20 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     final messages = _messagesByChatId[chatId];
     for (final message in messages ?? const <ChatMessage>[]) {
       if (message.role != ChatMessageRole.tool ||
-          message.toolActionStatus != ToolActionStatus.awaitingApproval ||
+          (message.toolActionStatus != ToolActionStatus.awaitingApproval &&
+              message.toolActionStatus !=
+                  ToolActionStatus.awaitingPlanReview) ||
           message.toolCallId == null) {
         continue;
       }
-      _resolveToolApproval(message.toolCallId!, false);
+      if (message.toolActionStatus == ToolActionStatus.awaitingPlanReview) {
+        _resolvePlanReview(
+          message.toolCallId!,
+          const PlanReviewResponse(decision: PlanReviewDecision.cancel),
+        );
+      } else {
+        _resolveToolApproval(message.toolCallId!, false);
+      }
       _updateToolAction(
         message.toolCallId!,
         content: 'Approval was cancelled when the response was stopped.',
@@ -968,6 +1238,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         history: history,
         projectPath: project.path,
         permissionMode: _permissionMode,
+        planMode: conversation?.planMode ?? false,
         reasoningEffort: reasoningEffort,
         enableProjectTools: _permissionMode != AgentPermissionMode.chatOnly &&
             _selectedModelProfile?.supportsTools != false,
@@ -1063,6 +1334,18 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                           .containsKey(_activeChatId),
                                   providerLabel: _selectedProvider?.routeLabel,
                                   permissionMode: _permissionMode,
+                                  planMode:
+                                      _activeChat?.planMode ?? _draftPlanMode,
+                                  canUsePlanMode: _canUsePlanMode,
+                                  onPlanModeChanged: (enabled) {
+                                    if (enabled && !_canUsePlanMode) {
+                                      _showNotice(
+                                        'Choose a tool-capable model and enable computer access to use Plan first.',
+                                      );
+                                      return;
+                                    }
+                                    _setPlanMode(enabled);
+                                  },
                                   onSend: _submitPrompt,
                                   onPickAttachments: _pickProjectAttachments,
                                   onStop: () => _stopGeneration(_activeChatId!),
@@ -1078,13 +1361,15 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                       _selectPage(AppPage.agents),
                                   onOpenChanges: () =>
                                       _selectPage(AppPage.changes),
-                                  onPermissionModeChanged: (mode) => setState(
-                                    () => _permissionMode = mode,
-                                  ),
+                                  onPermissionModeChanged:
+                                      _changePermissionMode,
                                   onApproveTool: (toolCallId) =>
                                       _resolveToolApproval(toolCallId, true),
                                   onDenyTool: (toolCallId) =>
                                       _resolveToolApproval(toolCallId, false),
+                                  onApprovePlan: _approvePlan,
+                                  onKeepPlanning: _keepPlanning,
+                                  onCancelPlan: _cancelPlan,
                                 ),
                               AppPage.agents => AgentsScreen(
                                   key: const Key('page.agents'),
@@ -1119,9 +1404,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                   workspacePath: _activeProject?.path,
                                   onSelectWorkspace: _createProjectFromFolder,
                                   permissionMode: _permissionMode,
-                                  onPermissionModeChanged: (mode) => setState(
-                                    () => _permissionMode = mode,
-                                  ),
+                                  onPermissionModeChanged:
+                                      _changePermissionMode,
                                 ),
                             },
                           ),

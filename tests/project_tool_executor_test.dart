@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -133,6 +135,116 @@ void main() {
       expect(credential, contains('restricted'));
       expect(await secret.readAsString(), contains('private'));
       expect(await env.readAsString(), contains('private'));
+    });
+
+    test('full access reads and edits text files outside the project',
+        () async {
+      final workspace = await Directory.systemTemp.createTemp('penguin-full-');
+      addTearDown(() => workspace.delete(recursive: true));
+      final project = Directory(
+        '${workspace.path}${Platform.pathSeparator}project',
+      );
+      await project.create();
+      final externalFile = File(
+        '${workspace.path}${Platform.pathSeparator}notes.custom',
+      );
+      await externalFile.writeAsString('Remember the blue sky.\n');
+      final executor = ProjectToolExecutor();
+
+      final read = await executor.execute(
+        projectPath: project.path,
+        fullAccess: true,
+        call: _call('read_project_file', {'path': externalFile.path}),
+      );
+      expect(read, contains('Remember the blue sky.'));
+
+      final edit = await executor.execute(
+        projectPath: project.path,
+        fullAccess: true,
+        call: _call('edit_project_file', {
+          'file_path': externalFile.path,
+          'old_string': 'blue sky',
+          'new_string': 'clear ice',
+        }),
+      );
+      expect(edit, contains('Updated'));
+      expect(await externalFile.readAsString(), 'Remember the clear ice.\n');
+    });
+
+    test('runs commands only in full access mode', () async {
+      final project = await Directory.systemTemp.createTemp('penguin-command-');
+      final externalDirectory =
+          await Directory.systemTemp.createTemp('penguin-command-cwd-');
+      addTearDown(() => project.delete(recursive: true));
+      addTearDown(() => externalDirectory.delete(recursive: true));
+      final executor = ProjectToolExecutor();
+      final command = Platform.isWindows
+          ? "Write-Output 'penguin-command-ok'"
+          : "printf 'penguin-command-ok'";
+      final call = _call('run_command', {'command': command});
+
+      final denied = await executor.execute(
+        projectPath: project.path,
+        call: call,
+      );
+      expect(denied, contains('requires Full access mode'));
+
+      final result = await executor.execute(
+        projectPath: project.path,
+        call: call,
+        fullAccess: true,
+      );
+      expect(result, contains('Command completed successfully.'));
+      expect(result, contains('Exit code: 0'));
+      expect(result, contains('penguin-command-ok'));
+
+      final printWorkingDirectory =
+          Platform.isWindows ? '(Get-Location).Path' : 'pwd';
+      final externalCommand = await executor.execute(
+        projectPath: project.path,
+        fullAccess: true,
+        call: _call('run_command', {
+          'command': printWorkingDirectory,
+          'working_directory': externalDirectory.path,
+        }),
+      );
+      expect(
+        externalCommand.toLowerCase(),
+        contains(externalDirectory.path.toLowerCase()),
+      );
+
+      final outputCommand = Platform.isWindows
+          ? "Write-Output ('x' * 20000)"
+          : "printf '%020000d' 0";
+      final boundedOutput = await executor.execute(
+        projectPath: project.path,
+        fullAccess: true,
+        call: _call('run_command', {'command': outputCommand}),
+      );
+      expect(boundedOutput, contains('Command output truncated at 16 KiB'));
+      expect(
+        utf8.encode(boundedOutput).length,
+        lessThan(ProjectToolExecutor.maxCommandOutputBytes + 512),
+      );
+    });
+
+    test('stops the active shell when generation is cancelled', () async {
+      final project = await Directory.systemTemp.createTemp('penguin-stop-');
+      addTearDown(() => project.delete(recursive: true));
+      final stop = Completer<void>();
+      final command =
+          Platform.isWindows ? 'Start-Sleep -Seconds 30' : 'exec sleep 30';
+      final running = ProjectToolExecutor().execute(
+        projectPath: project.path,
+        fullAccess: true,
+        abortTrigger: stop.future,
+        call: _call('run_command', {'command': command}),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      stop.complete();
+
+      final result = await running.timeout(const Duration(seconds: 6));
+      expect(result, startsWith('Tool cancelled:'));
     });
 
     test('rejects symbolic links', () async {

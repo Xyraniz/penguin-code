@@ -16,15 +16,29 @@ enum AgentPermissionMode {
   chatOnly,
   askBeforeEachAction,
   autoApproveProjectReads,
+  fullAccess,
 }
 
 enum ToolActionStatus {
   awaitingApproval,
+  awaitingPlanReview,
   running,
   completed,
+  planApproved,
+  planRevisionRequested,
   denied,
   failed,
   cancelled,
+  loopBlocked,
+}
+
+enum PlanReviewDecision { approve, requestChanges, cancel }
+
+class PlanReviewResponse {
+  const PlanReviewResponse({required this.decision, this.feedback = ''});
+
+  final PlanReviewDecision decision;
+  final String feedback;
 }
 
 class AgentToolCall {
@@ -217,15 +231,19 @@ class ChatConversation {
     required this.id,
     required this.title,
     required this.projectId,
+    this.planMode = false,
   });
 
   final String id;
   final String title;
   final String projectId;
+  final bool planMode;
 
-  ChatConversation copyWith({String? title}) => ChatConversation(
+  ChatConversation copyWith({String? title, bool? planMode}) =>
+      ChatConversation(
         id: id,
         title: title ?? this.title,
         projectId: projectId,
+        planMode: planMode ?? this.planMode,
       );
 }

@@ -657,7 +657,7 @@ class _ToolSettings extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Choose project access',
+                  'Choose computer access',
                   style: TextStyle(
                     color: AppColors.ink,
                     fontSize: 14,
@@ -665,10 +665,14 @@ class _ToolSettings extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 5),
-                const Text(
-                  'This setting controls project read tools. File edits always require your approval.',
+                Text(
+                  permissionMode == AgentPermissionMode.fullAccess
+                      ? 'Full access is enabled. The connected model can access files across your computer and run commands without per-action approval.'
+                      : 'This setting controls which files the agent can access and when it needs approval. File edits require your approval outside Full access.',
                   style: TextStyle(
-                    color: AppColors.muted,
+                    color: permissionMode == AgentPermissionMode.fullAccess
+                        ? AppColors.amber
+                        : AppColors.muted,
                     fontSize: 12,
                     height: 1.45,
                   ),
@@ -685,7 +689,7 @@ class _ToolSettings extends StatelessWidget {
         const SizedBox(height: 12),
         const _AvailableProjectTools(),
         const SizedBox(height: 14),
-        const _SafetyNote(),
+        _SafetyNote(permissionMode: permissionMode),
       ],
     );
   }
@@ -699,23 +703,28 @@ class _AvailableProjectTools extends StatelessWidget {
     const tools = [
       (
         AppIcons.folderOpenRounded,
-        'List project files',
-        'Inspect readable files and folders.',
+        'List computer files',
+        'Inspect readable files and folders anywhere on the computer.',
       ),
       (
         AppIcons.searchRounded,
-        'Search project files',
-        'Find literal text in supported source and text files.',
+        'Search computer files',
+        'Find literal text in supported source and text files anywhere on the computer.',
       ),
       (
         AppIcons.fileCodeOutlined,
-        'Read a project file',
-        'Read one supported file within the selected project.',
+        'Read a file',
+        'Read one supported file from any computer folder.',
       ),
       (
         AppIcons.editNoteRounded,
-        'Edit a project file',
-        'Review a unique text replacement and approve it before it is applied.',
+        'Edit a file',
+        'Replace a unique text match after reading. Approval depends on the selected mode.',
+      ),
+      (
+        AppIcons.terminalRounded,
+        'Run a command',
+        'Run shell commands on your computer. Available in Full access mode.',
       ),
     ];
     return Column(
@@ -738,26 +747,40 @@ class _AvailableProjectTools extends StatelessWidget {
 }
 
 class _SafetyNote extends StatelessWidget {
-  const _SafetyNote();
+  const _SafetyNote({required this.permissionMode});
+
+  final AgentPermissionMode permissionMode;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(13),
       decoration: BoxDecoration(
-        color: AppColors.ice,
+        color: permissionMode == AgentPermissionMode.fullAccess
+            ? const Color(0xFFFFF5E5)
+            : AppColors.ice,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppColors.line),
       ),
-      child: const Row(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(AppIcons.shieldOutlined, color: AppColors.blueDeep, size: 18),
-          SizedBox(width: 9),
+          Icon(
+            permissionMode == AgentPermissionMode.fullAccess
+                ? AppIcons.securityOutlined
+                : AppIcons.shieldOutlined,
+            color: permissionMode == AgentPermissionMode.fullAccess
+                ? AppColors.amber
+                : AppColors.blueDeep,
+            size: 18,
+          ),
+          const SizedBox(width: 9),
           Expanded(
             child: Text(
-              'Project reads stay inside the selected folder. Credential files, generated folders, unsupported files, and symbolic links are excluded. File edits and terminal commands are not available.',
-              style: TextStyle(
+              permissionMode == AgentPermissionMode.fullAccess
+                  ? 'The connected model may send file contents and command output to your selected provider. Only use Full access with a model you trust.'
+                  : 'File tools can access supported files anywhere on your computer. Credential files, unsupported files, and symbolic links remain excluded. The selected access mode controls approvals, and shell commands require Full access.',
+              style: const TextStyle(
                 color: AppColors.ink,
                 fontSize: 12,
                 height: 1.45,

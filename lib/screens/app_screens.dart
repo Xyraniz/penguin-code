@@ -17,6 +17,9 @@ class ChatScreen extends StatefulWidget {
     required this.isGenerating,
     required this.providerLabel,
     required this.permissionMode,
+    required this.planMode,
+    required this.canUsePlanMode,
+    required this.onPlanModeChanged,
     required this.onSend,
     required this.onPickAttachments,
     required this.onStop,
@@ -30,6 +33,9 @@ class ChatScreen extends StatefulWidget {
     required this.onPermissionModeChanged,
     required this.onApproveTool,
     required this.onDenyTool,
+    required this.onApprovePlan,
+    required this.onKeepPlanning,
+    required this.onCancelPlan,
   });
 
   final String? title;
@@ -40,6 +46,9 @@ class ChatScreen extends StatefulWidget {
   final bool isGenerating;
   final String? providerLabel;
   final AgentPermissionMode permissionMode;
+  final bool planMode;
+  final bool canUsePlanMode;
+  final ValueChanged<bool> onPlanModeChanged;
   final bool Function(String, List<ChatAttachment>) onSend;
   final Future<List<ChatAttachment>> Function(
     List<ChatAttachment> alreadyAttached,
@@ -55,6 +64,9 @@ class ChatScreen extends StatefulWidget {
   final ValueChanged<AgentPermissionMode> onPermissionModeChanged;
   final ValueChanged<String> onApproveTool;
   final ValueChanged<String> onDenyTool;
+  final ValueChanged<String> onApprovePlan;
+  final void Function(String, String) onKeepPlanning;
+  final ValueChanged<String> onCancelPlan;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -116,6 +128,16 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  Future<void> _requestPlanChanges(String toolCallId) async {
+    final feedback = await showDialog<String>(
+      context: context,
+      builder: (context) => const _PlanFeedbackDialog(),
+    );
+    if (feedback != null) {
+      widget.onKeepPlanning(toolCallId, feedback.trim());
+    }
+  }
+
   void _removeAttachment(String relativePath) {
     setState(() {
       _pendingAttachments.removeWhere(
@@ -161,6 +183,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 _EmptyChatWelcome(
                   project: widget.project,
                   hasModel: widget.hasModel,
+                  permissionMode: widget.permissionMode,
                   onUseSuggestion: _useSuggestion,
                   onChooseProject: widget.onChooseProject,
                   onCreateProject: widget.onCreateProject,
@@ -173,12 +196,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   onRetry: widget.onRetry,
                   onApproveTool: widget.onApproveTool,
                   onDenyTool: widget.onDenyTool,
+                  onApprovePlan: widget.onApprovePlan,
+                  onKeepPlanning: _requestPlanChanges,
+                  onCancelPlan: widget.onCancelPlan,
                 )
               else
                 _ConversationPlaceholder(
                   title: widget.title!,
                   project: widget.project!,
                   hasModel: widget.hasModel,
+                  permissionMode: widget.permissionMode,
                   onOpenAgents: widget.onOpenAgents,
                   onOpenChanges: widget.onOpenChanges,
                 ),
@@ -195,6 +222,9 @@ class _ChatScreenState extends State<ChatScreen> {
           providerLabel: widget.providerLabel,
           permissionMode: widget.permissionMode,
           onPermissionModeChanged: widget.onPermissionModeChanged,
+          planMode: widget.planMode,
+          canUsePlanMode: widget.canUsePlanMode,
+          onPlanModeChanged: widget.onPlanModeChanged,
           attachments: _pendingAttachments,
           isPickingAttachments: _isPickingAttachments,
           onAddAttachments: _pickAttachments,
@@ -205,10 +235,58 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
+class _PlanFeedbackDialog extends StatefulWidget {
+  const _PlanFeedbackDialog();
+
+  @override
+  State<_PlanFeedbackDialog> createState() => _PlanFeedbackDialogState();
+}
+
+class _PlanFeedbackDialogState extends State<_PlanFeedbackDialog> {
+  final _feedbackController = TextEditingController();
+
+  @override
+  void dispose() {
+    _feedbackController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('What should change?'),
+        content: SizedBox(
+          width: 420,
+          child: TextField(
+            key: const Key('chat.plan.feedback'),
+            controller: _feedbackController,
+            autofocus: true,
+            minLines: 3,
+            maxLines: 7,
+            maxLength: 4000,
+            decoration: const InputDecoration(
+              hintText: 'Describe what the plan should account for.',
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('chat.plan.feedback.submit'),
+            onPressed: () => Navigator.pop(context, _feedbackController.text),
+            child: const Text('Keep planning'),
+          ),
+        ],
+      );
+}
+
 class _EmptyChatWelcome extends StatelessWidget {
   const _EmptyChatWelcome({
     required this.project,
     required this.hasModel,
+    required this.permissionMode,
     required this.onUseSuggestion,
     required this.onChooseProject,
     required this.onCreateProject,
@@ -218,6 +296,7 @@ class _EmptyChatWelcome extends StatelessWidget {
 
   final Project? project;
   final bool hasModel;
+  final AgentPermissionMode permissionMode;
   final ValueChanged<String> onUseSuggestion;
   final VoidCallback onChooseProject;
   final Future<Project?> Function() onCreateProject;
@@ -365,8 +444,8 @@ class _EmptyChatWelcome extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    const Text(
-                      'Project access follows your selected permission for reads. File edits always need your approval. The agent cannot run commands.',
+                    Text(
+                      _accessDescription(permissionMode),
                       style: const TextStyle(
                         color: AppColors.muted,
                         fontSize: 11,
@@ -430,6 +509,7 @@ class _ConversationPlaceholder extends StatelessWidget {
     required this.title,
     required this.project,
     required this.hasModel,
+    required this.permissionMode,
     required this.onOpenAgents,
     required this.onOpenChanges,
   });
@@ -437,6 +517,7 @@ class _ConversationPlaceholder extends StatelessWidget {
   final String title;
   final Project project;
   final bool hasModel;
+  final AgentPermissionMode permissionMode;
   final VoidCallback onOpenAgents;
   final VoidCallback onOpenChanges;
 
@@ -499,9 +580,9 @@ class _ConversationPlaceholder extends StatelessWidget {
               style: Theme.of(context).textTheme.headlineMedium,
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Project access follows your selected permission for reads. File edits always need your approval. The agent cannot run commands.',
-              style: TextStyle(
+            Text(
+              _accessDescription(permissionMode),
+              style: const TextStyle(
                 color: AppColors.muted,
                 fontSize: 13,
                 height: 1.5,
@@ -541,6 +622,9 @@ class _Composer extends StatelessWidget {
     required this.providerLabel,
     required this.permissionMode,
     required this.onPermissionModeChanged,
+    required this.planMode,
+    required this.canUsePlanMode,
+    required this.onPlanModeChanged,
     required this.attachments,
     required this.isPickingAttachments,
     required this.onAddAttachments,
@@ -555,6 +639,9 @@ class _Composer extends StatelessWidget {
   final bool isGenerating;
   final String? providerLabel;
   final AgentPermissionMode permissionMode;
+  final bool planMode;
+  final bool canUsePlanMode;
+  final ValueChanged<bool> onPlanModeChanged;
   final ValueChanged<AgentPermissionMode> onPermissionModeChanged;
   final List<ChatAttachment> attachments;
   final bool isPickingAttachments;
@@ -678,18 +765,64 @@ class _Composer extends StatelessWidget {
                           compact: true,
                           enabled: enabled && !isGenerating,
                         ),
+                        const SizedBox(width: 5),
+                        Tooltip(
+                          message: canUsePlanMode || planMode
+                              ? 'Plan first and review the plan before making changes.'
+                              : 'Choose a tool-capable model and enable computer access to use Plan first.',
+                          child: FilterChip(
+                            key: const Key('composer.plan.toggle'),
+                            selected: planMode,
+                            showCheckmark: false,
+                            onSelected:
+                                !isGenerating && (canUsePlanMode || planMode)
+                                    ? onPlanModeChanged
+                                    : null,
+                            avatar: Icon(
+                              AppIcons.modelReasoning,
+                              size: 15,
+                              color: planMode
+                                  ? AppColors.blueDeep
+                                  : AppColors.muted,
+                            ),
+                            label: const Text('Plan first'),
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            padding: const EdgeInsets.symmetric(horizontal: 5),
+                            side: BorderSide(
+                              color: planMode ? AppColors.blue : AppColors.line,
+                            ),
+                            backgroundColor: Colors.white,
+                            selectedColor: AppColors.ice,
+                            labelStyle: TextStyle(
+                              color: planMode
+                                  ? AppColors.blueDeep
+                                  : AppColors.muted,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
                         const SizedBox(width: 8),
                         Flexible(
                           child: Text(
-                            enabled && attachments.isNotEmpty
-                                ? '${attachments.length} file${attachments.length == 1 ? '' : 's'} attached · ${permissionMode.compactLabel}.'
-                                : enabled
-                                    ? 'Project access: ${permissionMode.compactLabel}.'
-                                    : 'Select a project folder to begin.',
+                            planMode
+                                ? 'Plan first is on · read-only until approval.'
+                                : enabled && attachments.isNotEmpty
+                                    ? '${attachments.length} file${attachments.length == 1 ? '' : 's'} attached · ${_composerAccessLabel(permissionMode)}'
+                                    : enabled
+                                        ? _composerAccessLabel(permissionMode)
+                                        : 'Select a project folder to begin.',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: AppColors.muted,
+                            style: TextStyle(
+                              color: planMode
+                                  ? AppColors.blueDeep
+                                  : permissionMode ==
+                                          AgentPermissionMode.fullAccess
+                                      ? AppColors.amber
+                                      : AppColors.muted,
                               fontSize: 11,
                             ),
                           ),
@@ -753,18 +886,40 @@ class _Composer extends StatelessWidget {
   }
 }
 
+String _accessDescription(AgentPermissionMode mode) => switch (mode) {
+      AgentPermissionMode.chatOnly =>
+        'Computer file access is disabled. Choose another mode to let the agent work with files.',
+      AgentPermissionMode.askBeforeEachAction =>
+        'The agent can work with supported files anywhere on your computer. Every file action needs your approval. Commands require Full access.',
+      AgentPermissionMode.autoApproveProjectReads =>
+        'The agent can work with supported files anywhere on your computer. Listing, search, and reads run automatically; edits need your approval. Commands require Full access.',
+      AgentPermissionMode.fullAccess =>
+        'Full access is enabled. The connected model can read and edit files anywhere on your computer and run commands without asking first.',
+    };
+
+String _composerAccessLabel(AgentPermissionMode mode) =>
+    mode == AgentPermissionMode.fullAccess
+        ? 'Full access is on · files and commands run without approval.'
+        : 'Computer access: ${mode.compactLabel}.';
+
 class _MessageTimeline extends StatefulWidget {
   const _MessageTimeline({
     required this.messages,
     required this.onRetry,
     required this.onApproveTool,
     required this.onDenyTool,
+    required this.onApprovePlan,
+    required this.onKeepPlanning,
+    required this.onCancelPlan,
   });
 
   final List<ChatMessage> messages;
   final ValueChanged<String> onRetry;
   final ValueChanged<String> onApproveTool;
   final ValueChanged<String> onDenyTool;
+  final ValueChanged<String> onApprovePlan;
+  final ValueChanged<String> onKeepPlanning;
+  final ValueChanged<String> onCancelPlan;
 
   @override
   State<_MessageTimeline> createState() => _MessageTimelineState();
@@ -811,6 +966,9 @@ class _MessageTimelineState extends State<_MessageTimeline> {
                 message: message,
                 onApprove: widget.onApproveTool,
                 onDeny: widget.onDenyTool,
+                onApprovePlan: widget.onApprovePlan,
+                onKeepPlanning: widget.onKeepPlanning,
+                onCancelPlan: widget.onCancelPlan,
               );
             }
             final user = message.role == ChatMessageRole.user;
@@ -953,24 +1111,40 @@ class _ToolActionCard extends StatelessWidget {
     required this.message,
     required this.onApprove,
     required this.onDeny,
+    required this.onApprovePlan,
+    required this.onKeepPlanning,
+    required this.onCancelPlan,
   });
 
   final ChatMessage message;
   final ValueChanged<String> onApprove;
   final ValueChanged<String> onDeny;
+  final ValueChanged<String> onApprovePlan;
+  final ValueChanged<String> onKeepPlanning;
+  final ValueChanged<String> onCancelPlan;
 
   @override
   Widget build(BuildContext context) {
     final callId = message.toolCallId;
+    if (message.toolName == 'submit_plan') {
+      return _PlanReviewCard(
+        message: message,
+        onApprove: onApprovePlan,
+        onKeepPlanning: onKeepPlanning,
+        onCancel: onCancelPlan,
+      );
+    }
     final name = switch (message.toolName) {
-      'list_project_files' => 'List project files',
-      'search_project_files' => 'Search project files',
-      'read_project_file' => 'Read a project file',
-      'edit_project_file' => 'Edit a project file',
-      _ => 'Project file action',
+      'list_project_files' => 'List computer files',
+      'search_project_files' => 'Search computer files',
+      'read_project_file' => 'Read a file',
+      'edit_project_file' => 'Edit a file',
+      'run_command' => 'Run a command',
+      _ => 'Computer file action',
     };
     final isEdit = message.toolName == 'edit_project_file';
-    final target = message.toolArguments['file_path'] ??
+    final target = message.toolArguments['command'] ??
+        message.toolArguments['file_path'] ??
         message.toolArguments['path'] ??
         message.toolArguments['query'] ??
         '.';
@@ -978,15 +1152,21 @@ class _ToolActionCard extends StatelessWidget {
     final icon = switch (message.toolName) {
       'list_project_files' => AppIcons.folderOpenRounded,
       'search_project_files' => AppIcons.searchRounded,
+      'run_command' => AppIcons.terminalRounded,
       _ => AppIcons.fileCodeOutlined,
     };
     final statusLabel = switch (actionStatus) {
       ToolActionStatus.awaitingApproval => 'Approval needed',
-      ToolActionStatus.running => 'Working',
+      ToolActionStatus.awaitingPlanReview => 'Review needed',
+      ToolActionStatus.running =>
+        message.toolName == 'run_command' ? 'Running command' : 'Working',
       ToolActionStatus.completed => 'Completed',
+      ToolActionStatus.planApproved => 'Plan approved',
+      ToolActionStatus.planRevisionRequested => 'Plan revision requested',
       ToolActionStatus.denied => 'Denied',
       ToolActionStatus.failed => 'Could not run',
       ToolActionStatus.cancelled => 'Cancelled',
+      ToolActionStatus.loopBlocked => 'Loop stopped',
       null => 'Project action',
     };
     return Align(
@@ -1031,6 +1211,7 @@ class _ToolActionCard extends StatelessWidget {
                             style: const TextStyle(
                               color: AppColors.muted,
                               fontSize: 11,
+                              fontFamily: 'monospace',
                             ),
                           ),
                         ],
@@ -1060,7 +1241,7 @@ class _ToolActionCard extends StatelessWidget {
                     child: Text(
                       isEdit
                           ? 'Review the proposed replacement. It applies only if the file was read and has not changed since then.'
-                          : 'Penguin Code will only read files inside the selected project.',
+                          : 'This request can access supported files anywhere on your computer. The selected access mode controls approval.',
                       style: const TextStyle(
                         color: AppColors.muted,
                         fontSize: 11,
@@ -1123,6 +1304,173 @@ class _ToolActionCard extends StatelessWidget {
                       ),
                     ),
                   ],
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PlanReviewCard extends StatelessWidget {
+  const _PlanReviewCard({
+    required this.message,
+    required this.onApprove,
+    required this.onKeepPlanning,
+    required this.onCancel,
+  });
+
+  final ChatMessage message;
+  final ValueChanged<String> onApprove;
+  final ValueChanged<String> onKeepPlanning;
+  final ValueChanged<String> onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final callId = message.toolCallId;
+    final status = message.toolActionStatus;
+    final awaitingReview = status == ToolActionStatus.awaitingPlanReview;
+    final plan = message.toolArguments['plan'];
+    final statusLabel = switch (status) {
+      ToolActionStatus.awaitingPlanReview => 'Review needed',
+      ToolActionStatus.planApproved => 'Approved',
+      ToolActionStatus.planRevisionRequested => 'Changes requested',
+      ToolActionStatus.cancelled => 'Cancelled',
+      ToolActionStatus.failed => 'Could not review',
+      ToolActionStatus.loopBlocked => 'Loop stopped',
+      _ => 'Plan review',
+    };
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: Card(
+          key: Key('chat.plan.review.${message.id}'),
+          child: Padding(
+            padding: const EdgeInsets.all(15),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: AppColors.ice,
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      child: const Icon(
+                        AppIcons.rateReviewOutlined,
+                        size: 18,
+                        color: AppColors.blueDeep,
+                      ),
+                    ),
+                    const SizedBox(width: 11),
+                    const Expanded(
+                      child: Text(
+                        'Implementation plan',
+                        style: TextStyle(
+                          color: AppColors.ink,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      statusLabel,
+                      key: Key('chat.plan.status.${message.id}'),
+                      style: TextStyle(
+                        color: awaitingReview
+                            ? AppColors.blueDeep
+                            : AppColors.muted,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+                if (plan is String && plan.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 340),
+                    child: Scrollbar(
+                      child: SingleChildScrollView(
+                        child: SelectableText(
+                          plan,
+                          key: Key('chat.plan.content.${message.id}'),
+                          style: const TextStyle(
+                            color: AppColors.ink,
+                            fontSize: 12,
+                            height: 1.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+                if (awaitingReview) ...[
+                  const Padding(
+                    padding: EdgeInsets.only(top: 12),
+                    child: Text(
+                      'Project changes and commands stay unavailable until you approve this plan.',
+                      style: TextStyle(
+                        color: AppColors.muted,
+                        fontSize: 11,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      FilledButton.icon(
+                        key: Key('chat.plan.approve.$callId'),
+                        onPressed:
+                            callId == null ? null : () => onApprove(callId),
+                        icon: const Icon(AppIcons.checkRounded, size: 15),
+                        label: const Text('Approve plan'),
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size(0, 35),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        key: Key('chat.plan.revise.$callId'),
+                        onPressed: callId == null
+                            ? null
+                            : () => onKeepPlanning(callId),
+                        icon: const Icon(AppIcons.editNoteRounded, size: 15),
+                        label: const Text('Keep planning'),
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size(0, 35),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      TextButton(
+                        key: Key('chat.plan.cancel.$callId'),
+                        onPressed:
+                            callId == null ? null : () => onCancel(callId),
+                        child: const Text('Cancel'),
+                      ),
+                    ],
+                  ),
+                ] else if (message.content.isNotEmpty) ...[
+                  const SizedBox(height: 9),
+                  SelectableText(
+                    message.content,
+                    key: Key('chat.plan.result.${message.id}'),
+                    style: const TextStyle(
+                      color: AppColors.muted,
+                      fontSize: 11,
+                      height: 1.4,
+                    ),
+                  ),
                 ],
               ],
             ),

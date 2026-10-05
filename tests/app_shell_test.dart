@@ -57,7 +57,7 @@ void main() {
     expect(find.text('No messages'), findsOneWidget);
     expect(
       find.text(
-        'Project access follows your selected permission for reads. File edits always need your approval. The agent cannot run commands.',
+        'The agent can work with supported files anywhere on your computer. Every file action needs your approval. Commands require Full access.',
       ),
       findsOneWidget,
     );
@@ -87,6 +87,654 @@ void main() {
 
     expect(find.text('Root'), findsWidgets);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('requires confirmation before enabling full access', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    await tester.pumpWidget(
+      const PenguinCodeApp(initialProjects: [_testProject]),
+    );
+    await tester.pumpAndSettle();
+    await _startProjectChat(tester);
+
+    await tester.tap(find.byKey(const Key('project.access.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('project.access.option.fullAccess')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('project.access.confirm.dialog')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const Key('project.access.confirm.cancel')));
+    await tester.pumpAndSettle();
+    expect(find.text('Computer access: Ask first.'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('project.access.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('project.access.option.fullAccess')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('project.access.confirm.enable')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Full access is on · files and commands run without approval.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('runs a command after full access is confirmed', (tester) async {
+    await _setDesktopSize(tester);
+    final projectDirectory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('penguin-full-access-ui-'),
+    ))!;
+    addTearDown(
+      () => tester.runAsync(() => projectDirectory.delete(recursive: true)),
+    );
+    final project = Project(
+      id: 'full-access-project',
+      name: 'Full access project',
+      path: projectDirectory.path,
+    );
+    final source = File(
+      '${projectDirectory.path}${Platform.pathSeparator}main.dart',
+    );
+    await tester.runAsync(
+      () => source.writeAsString('const greeting = "Hello";\n'),
+    );
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final command = Platform.isWindows
+        ? "Write-Output 'penguin-ui-command-ok'"
+        : "printf 'penguin-ui-command-ok'";
+    final editArguments = jsonEncode({
+      'file_path': 'main.dart',
+      'old_string': 'Hello',
+      'new_string': 'Penguin',
+    });
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requests.add(
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+        );
+        final body = switch (responseIndex++) {
+          0 => _sseToolCall(
+              name: 'read_project_file',
+              arguments: '{"path":"main.dart"}',
+              id: 'full-access-read',
+            ),
+          1 => _sseToolCall(
+              name: 'edit_project_file',
+              arguments: editArguments,
+              id: 'full-access-edit',
+            ),
+          2 => _sseToolCall(
+              name: 'run_command',
+              arguments: jsonEncode({'command': command}),
+              id: 'full-access-command',
+            ),
+          _ => _sseChunk('The command returned successfully.'),
+        };
+        return _chatResponse('$body\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(
+      PenguinCodeApp(
+        initialProjects: [project],
+        chatClient: client,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+    await _startProjectChatFor(tester, project.id);
+
+    await tester.tap(find.byKey(const Key('project.access.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('project.access.option.fullAccess')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('project.access.confirm.enable')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Run the project verification command',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    for (var attempt = 0; attempt < 80 && responseIndex < 4; attempt++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+    expect(responseIndex, 4, reason: 'The command response should complete.');
+    final commandToolResults = requests[3]['messages'] as List<dynamic>;
+    expect(
+      commandToolResults.any(
+        (message) =>
+            message is Map<String, dynamic> &&
+            message['role'] == 'tool' &&
+            '${message['content']}'.contains('Command completed successfully.'),
+      ),
+      isTrue,
+      reason: 'The model should receive the completed command result.',
+    );
+    await _pumpUntilVisible(
+      tester,
+      find.text('The command returned successfully.'),
+    );
+
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Penguin";\n',
+    );
+    expect(
+      find.textContaining('stdout:\npenguin-ui-command-ok'),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('chat.tool.approve.full-access-edit')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const Key('chat.tool.approve.full-access-command')),
+      findsNothing,
+    );
+  });
+
+  testWidgets(
+    'stops the fifth identical full access call and resets next turn',
+    (tester) async {
+      await _setDesktopSize(tester);
+      final projectDirectory = (await tester.runAsync(
+        () => Directory.systemTemp.createTemp('penguin-loop-guard-ui-'),
+      ))!;
+      addTearDown(
+        () => tester.runAsync(() => projectDirectory.delete(recursive: true)),
+      );
+      final project = Project(
+        id: 'loop-guard-project',
+        name: 'Loop guard project',
+        path: projectDirectory.path,
+      );
+      final source = File(
+        '${projectDirectory.path}${Platform.pathSeparator}main.dart',
+      );
+      await tester.runAsync(
+        () => source.writeAsString('const greeting = "Hello";\n'),
+      );
+      final arguments = jsonEncode({'path': 'main.dart'});
+      final requests = <Map<String, dynamic>>[];
+      var responseIndex = 0;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeChatClient((request) async {
+          final index = responseIndex++;
+          requests.add(
+            jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+          );
+          final body = index <= 4 || index == 6
+              ? _sseToolCall(
+                  name: 'read_project_file',
+                  arguments: arguments,
+                  id: 'repeat-$index',
+                )
+              : _sseChunk(
+                  index == 5
+                      ? 'I changed approach after the repeated call was stopped.'
+                      : 'The new request ran successfully.',
+                );
+          return _chatResponse('$body\ndata: [DONE]\n\n');
+        }),
+      );
+      await tester.pumpWidget(
+        PenguinCodeApp(
+          initialProjects: [project],
+          chatClient: client,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await _configureProvider(tester);
+      await _startProjectChatFor(tester, project.id);
+      await tester.tap(find.byKey(const Key('project.access.menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('project.access.option.fullAccess')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('project.access.confirm.enable')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.byKey(const Key('composer.input')),
+        'Read the same file repeatedly',
+      );
+      await tester.tap(find.byKey(const Key('composer.send')));
+      for (var attempt = 0; attempt < 80 && responseIndex < 6; attempt++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+      }
+      expect(
+        responseIndex,
+        6,
+        reason: 'The tool loop should complete its turn.',
+      );
+      await _pumpUntilVisible(
+        tester,
+        find.text('I changed approach after the repeated call was stopped.'),
+      );
+
+      expect(responseIndex, 6);
+      expect(find.text('Loop stopped'), findsOneWidget);
+      final requestBeforeBlockedCall = requests[4]['messages'] as List<dynamic>;
+      expect(
+        requestBeforeBlockedCall.where(
+          (message) =>
+              message is Map<String, dynamic> && message['role'] == 'tool',
+        ),
+        hasLength(4),
+      );
+      final messagesAfterBlockedCall = requests[5]['messages'] as List<dynamic>;
+      expect(
+        messagesAfterBlockedCall.any(
+          (message) =>
+              message is Map<String, dynamic> &&
+              message['role'] == 'tool' &&
+              '${message['content']}'.contains(
+                'Repeated tool call stopped before execution',
+              ),
+        ),
+        isTrue,
+      );
+
+      await tester.enterText(
+        find.byKey(const Key('composer.input')),
+        'Run it once more in this new request',
+      );
+      await tester.tap(find.byKey(const Key('composer.send')));
+      await _pumpUntilVisible(
+        tester,
+        find.text('The new request ran successfully.'),
+      );
+      final messagesAfterNewCall = requests[7]['messages'] as List<dynamic>;
+      expect(
+        messagesAfterNewCall.any(
+          (message) =>
+              message is Map<String, dynamic> &&
+              message['role'] == 'tool' &&
+              '${message['content']}'.contains('const greeting = "Hello";'),
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  testWidgets('reviews a plan before enabling project edits', (tester) async {
+    await _setDesktopSize(tester);
+    final projectDirectory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('penguin-plan-mode-ui-'),
+    ))!;
+    addTearDown(
+      () => tester.runAsync(() => projectDirectory.delete(recursive: true)),
+    );
+    final source = File(
+      '${projectDirectory.path}${Platform.pathSeparator}main.dart',
+    );
+    await tester.runAsync(
+      () => source.writeAsString('const greeting = "Hello";\n'),
+    );
+    final project = Project(
+      id: 'plan-project',
+      name: 'Plan project',
+      path: projectDirectory.path,
+    );
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requests.add(
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+        );
+        final response = switch (responseIndex++) {
+          0 => _sseToolCall(
+              name: 'read_project_file',
+              arguments: '{"path":"main.dart"}',
+              id: 'plan-read',
+            ),
+          1 => _sseToolCall(
+              name: 'submit_plan',
+              arguments: jsonEncode({
+                'plan': '# Update greeting\n\n1. Change the greeting.\n',
+              }),
+              id: 'plan-first',
+            ),
+          2 => _sseToolCall(
+              name: 'submit_plan',
+              arguments: jsonEncode({
+                'plan':
+                    '# Update greeting and docs\n\n1. Change the greeting.\n2. Update the README.\n',
+              }),
+              id: 'plan-second',
+            ),
+          3 => _sseToolCall(
+              name: 'edit_project_file',
+              arguments: jsonEncode({
+                'file_path': 'main.dart',
+                'old_string': 'Hello',
+                'new_string': 'Penguin',
+              }),
+              id: 'edit-after-plan',
+            ),
+          _ => _sseChunk('Implementation finished.'),
+        };
+        return _chatResponse('$response\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(
+      PenguinCodeApp(initialProjects: [project], chatClient: client),
+    );
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+    await _startProjectChatFor(tester, project.id);
+
+    await tester.tap(find.byKey(const Key('project.access.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(
+        const Key('project.access.option.autoApproveProjectReads'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer.plan.toggle')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Plan first is on · read-only until approval.'),
+      findsOneWidget,
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Update the greeting and document the change.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.byKey(const Key('chat.plan.revise.plan-first')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Hello";\n',
+    );
+    final firstPlanTools = (requests[0]['tools'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map((tool) =>
+            (tool['function'] as Map<String, dynamic>)['name'] as String)
+        .toSet();
+    expect(firstPlanTools, contains('submit_plan'));
+    expect(firstPlanTools, isNot(contains('edit_project_file')));
+    expect(firstPlanTools, isNot(contains('run_command')));
+
+    final reviseButton = find.byKey(const Key('chat.plan.revise.plan-first'));
+    await tester.ensureVisible(reviseButton);
+    await tester.tap(reviseButton);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('chat.plan.feedback')),
+      'Include a short README update in the plan.',
+    );
+    await tester.tap(find.byKey(const Key('chat.plan.feedback.submit')));
+    await _pumpUntilVisible(
+      tester,
+      find.byKey(const Key('chat.plan.approve.plan-second')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      (requests[2]['messages'] as List<dynamic>).any(
+        (message) =>
+            message is Map<String, dynamic> &&
+            message['role'] == 'tool' &&
+            '${message['content']}'.contains(
+              'Include a short README update in the plan.',
+            ),
+      ),
+      isTrue,
+    );
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Hello";\n',
+    );
+
+    final approvePlanButton =
+        find.byKey(const Key('chat.plan.approve.plan-second'));
+    await tester.ensureVisible(approvePlanButton);
+    await tester.tap(approvePlanButton);
+    await _pumpUntilVisible(
+      tester,
+      find.byKey(const Key('chat.tool.approve.edit-after-plan')),
+    );
+    await tester.pumpAndSettle();
+    final executionTools = (requests[3]['tools'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map((tool) =>
+            (tool['function'] as Map<String, dynamic>)['name'] as String)
+        .toSet();
+    expect(executionTools, contains('edit_project_file'));
+    expect(executionTools, isNot(contains('submit_plan')));
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Hello";\n',
+    );
+
+    final approveEditButton =
+        find.byKey(const Key('chat.tool.approve.edit-after-plan'));
+    await tester.ensureVisible(approveEditButton);
+    await tester.tap(approveEditButton);
+    await _pumpUntilVisible(tester, find.text('Implementation finished.'));
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Penguin";\n',
+    );
+    expect(find.text('Approved'), findsOneWidget);
+  });
+
+  testWidgets('cancelling plan review leaves project files untouched', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final projectDirectory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('penguin-plan-cancel-ui-'),
+    ))!;
+    addTearDown(
+      () => tester.runAsync(() => projectDirectory.delete(recursive: true)),
+    );
+    final source = File(
+      '${projectDirectory.path}${Platform.pathSeparator}main.dart',
+    );
+    await tester.runAsync(
+      () => source.writeAsString('const greeting = "Hello";\n'),
+    );
+    final project = Project(
+      id: 'cancel-plan-project',
+      name: 'Cancel plan project',
+      path: projectDirectory.path,
+    );
+    var requestCount = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requestCount++;
+        return _chatResponse(
+          '${_sseToolCall(
+            name: 'submit_plan',
+            arguments:
+                jsonEncode({'plan': '# Change greeting\n\n1. Edit main.dart.'}),
+            id: 'cancel-plan',
+          )}data: [DONE]\n\n',
+        );
+      }),
+    );
+    await tester.pumpWidget(
+      PenguinCodeApp(initialProjects: [project], chatClient: client),
+    );
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+    await _startProjectChatFor(tester, project.id);
+    await tester.tap(find.byKey(const Key('composer.plan.toggle')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Plan a safe greeting update.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    final cancelPlanButton =
+        find.byKey(const Key('chat.plan.cancel.cancel-plan'));
+    await _pumpUntilVisible(tester, cancelPlanButton);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(cancelPlanButton);
+    await tester.tap(cancelPlanButton);
+    await tester.pumpAndSettle();
+
+    expect(requestCount, 1);
+    expect(find.text('Cancelled'), findsOneWidget);
+    final planChip = tester.widget<FilterChip>(
+      find.byKey(const Key('composer.plan.toggle')),
+    );
+    expect(planChip.selected, isFalse);
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Hello";\n',
+    );
+  });
+
+  testWidgets('blocks an unexpected edit call while Plan first is active', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final projectDirectory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('penguin-plan-guard-ui-'),
+    ))!;
+    addTearDown(
+      () => tester.runAsync(() => projectDirectory.delete(recursive: true)),
+    );
+    final outsideDirectory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('penguin-plan-outside-ui-'),
+    ))!;
+    addTearDown(
+      () => tester.runAsync(() => outsideDirectory.delete(recursive: true)),
+    );
+    final source = File.fromUri(
+      Directory(projectDirectory.path).uri.resolve('main.dart'),
+    );
+    final outsideFile = File.fromUri(
+      Directory(outsideDirectory.path).uri.resolve('private.txt'),
+    );
+    await tester.runAsync(
+      () => source.writeAsString('const greeting = "Hello";\n'),
+    );
+    await tester.runAsync(
+      () => outsideFile.writeAsString('private computer data'),
+    );
+    final project = Project(
+      id: 'plan-guard-project',
+      name: 'Plan guard project',
+      path: projectDirectory.path,
+    );
+    var responseIndex = 0;
+    final requests = <Map<String, dynamic>>[];
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requests.add(
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+        );
+        final response = switch (responseIndex++) {
+          0 => _sseToolCall(
+              name: 'read_project_file',
+              arguments: jsonEncode({'path': outsideFile.path}),
+              id: 'plan-outside-read',
+            ),
+          1 => _sseToolCall(
+              name: 'edit_project_file',
+              arguments: jsonEncode({
+                'file_path': 'main.dart',
+                'old_string': 'Hello',
+                'new_string': 'Unexpected',
+              }),
+              id: 'plan-guard-edit',
+            ),
+          _ => _sseChunk('I will wait for plan approval before editing.'),
+        };
+        return _chatResponse('$response\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(
+      PenguinCodeApp(initialProjects: [project], chatClient: client),
+    );
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+    await _startProjectChatFor(tester, project.id);
+    await tester.tap(find.byKey(const Key('project.access.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('project.access.option.fullAccess')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('project.access.confirm.enable')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer.plan.toggle')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Review the project before changing anything.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.textContaining(
+          'This action is unavailable while Plan first is active.'),
+    );
+
+    final planTools = (requests.first['tools'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map((tool) =>
+            (tool['function'] as Map<String, dynamic>)['name'] as String)
+        .toSet();
+    expect(planTools, isNot(contains('edit_project_file')));
+    expect(planTools, isNot(contains('run_command')));
+    final secondRequestMessages = requests[1]['messages'] as List<dynamic>;
+    expect(
+      secondRequestMessages.any(
+        (message) =>
+            message is Map<String, dynamic> &&
+            message['role'] == 'tool' &&
+            message['content']
+                .toString()
+                .contains('Use a path relative to the selected project.'),
+      ),
+      isTrue,
+    );
+    expect(
+      secondRequestMessages.any(
+        (message) =>
+            message is Map<String, dynamic> &&
+            message['content'].toString().contains('private computer data'),
+      ),
+      isFalse,
+    );
+    expect(
+      await tester.runAsync(source.readAsString),
+      'const greeting = "Hello";\n',
+    );
+    expect(responseIndex, 3);
+    await _pumpUntilVisible(
+      tester,
+      find.text('I will wait for plan approval before editing.'),
+    );
   });
 
   testWidgets('supports conversation shortcuts, rename, and search', (
@@ -299,7 +947,7 @@ void main() {
       findsOneWidget,
       reason: renderedText.join('\n'),
     );
-    expect(find.text('Checking project files.'), findsNothing);
+    expect(find.text('Checking files.'), findsNothing);
   });
 
   testWidgets('shows approved edit diffs and lists only applied changes', (

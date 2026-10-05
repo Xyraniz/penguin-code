@@ -161,9 +161,120 @@ void main() {
           'edit_project_file');
       final function = editTool['function'] as Map<String, dynamic>;
       final parameters = function['parameters'] as Map<String, dynamic>;
-      expect(function['description'], contains('user must approve'));
+      expect(function['description'], contains('requires approval unless'));
       expect(parameters['required'], ['file_path', 'old_string', 'new_string']);
       expect(parameters['additionalProperties'], isFalse);
+    });
+
+    test('advertises command execution only in full access mode', () async {
+      late http.BaseRequest sentRequest;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          sentRequest = request;
+          return _response(
+              'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n');
+        }),
+      );
+
+      await client
+          .streamEvents(
+            provider: _provider(),
+            history: const [],
+            abortTrigger: Completer<void>().future,
+            enableProjectTools: true,
+          )
+          .toList();
+      var body = jsonDecode((sentRequest as http.Request).body)
+          as Map<String, dynamic>;
+      var tools = body['tools'] as List<dynamic>;
+      expect(
+        tools.cast<Map<String, dynamic>>().any((tool) =>
+            (tool['function'] as Map<String, dynamic>)['name'] ==
+            'run_command'),
+        isFalse,
+      );
+
+      await client
+          .streamEvents(
+            provider: _provider(),
+            history: const [],
+            abortTrigger: Completer<void>().future,
+            enableProjectTools: true,
+            fullAccess: true,
+          )
+          .toList();
+      body = jsonDecode((sentRequest as http.Request).body)
+          as Map<String, dynamic>;
+      tools = body['tools'] as List<dynamic>;
+      final commandTool = tools.cast<Map<String, dynamic>>().singleWhere(
+            (tool) =>
+                (tool['function'] as Map<String, dynamic>)['name'] ==
+                'run_command',
+          );
+      expect(
+        (commandTool['function'] as Map<String, dynamic>)['description'],
+        contains('Full access mode'),
+      );
+      expect(
+        (body['messages'] as List<dynamic>).first['content'],
+        contains('without per-action approval'),
+      );
+    });
+
+    test('plan mode exposes only project reads and plan submission', () async {
+      late http.BaseRequest sentRequest;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          sentRequest = request;
+          return _response(
+            'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+          );
+        }),
+      );
+
+      await client
+          .streamEvents(
+            provider: _provider(),
+            history: const [],
+            abortTrigger: Completer<void>().future,
+            enableProjectTools: true,
+            fullAccess: true,
+            planMode: true,
+          )
+          .toList();
+
+      final body = jsonDecode((sentRequest as http.Request).body)
+          as Map<String, dynamic>;
+      final tools =
+          (body['tools'] as List<dynamic>).cast<Map<String, dynamic>>();
+      final toolNames = tools
+          .map((tool) => (tool['function'] as Map<String, dynamic>)['name'])
+          .toSet();
+      expect(
+        toolNames,
+        containsAll({
+          'list_project_files',
+          'search_project_files',
+          'read_project_file',
+          'submit_plan',
+        }),
+      );
+      expect(toolNames, isNot(contains('edit_project_file')));
+      expect(toolNames, isNot(contains('run_command')));
+      final systemMessage =
+          (body['messages'] as List<dynamic>).first as Map<String, dynamic>;
+      expect(systemMessage['content'], contains('Plan first is enabled'));
+      expect(systemMessage['content'], contains('must not edit files'));
+
+      final submitPlan = tools.singleWhere(
+        (tool) =>
+            (tool['function'] as Map<String, dynamic>)['name'] == 'submit_plan',
+      );
+      final function = submitPlan['function'] as Map<String, dynamic>;
+      expect(
+        (function['parameters'] as Map<String, dynamic>)['required'],
+        ['plan'],
+      );
     });
 
     test('reports sanitized model discovery errors', () async {

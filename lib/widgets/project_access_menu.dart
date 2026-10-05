@@ -8,29 +8,33 @@ extension AgentPermissionModePresentation on AgentPermissionMode {
   String get title => switch (this) {
         AgentPermissionMode.chatOnly => 'Chat only',
         AgentPermissionMode.askBeforeEachAction => 'Ask before every action',
-        AgentPermissionMode.autoApproveProjectReads =>
-          'Auto-approve project reads',
+        AgentPermissionMode.autoApproveProjectReads => 'Auto-approve reads',
+        AgentPermissionMode.fullAccess => 'Full access',
       };
 
   String get description => switch (this) {
         AgentPermissionMode.chatOnly =>
-          'The agent cannot access project files.',
+          'The agent cannot access files on your computer.',
         AgentPermissionMode.askBeforeEachAction =>
-          'Approve each file list, search, or read before it runs. File edits always ask first.',
+          'Approve every file list, search, or read anywhere on the computer. File edits always ask first.',
         AgentPermissionMode.autoApproveProjectReads =>
-          'List, search, and read supported files. File edits still require approval.',
+          'List, search, and read supported files anywhere. File edits still require approval.',
+        AgentPermissionMode.fullAccess =>
+          'Read and edit files anywhere and run commands without per-action approval. Risky.',
       };
 
   String get compactLabel => switch (this) {
         AgentPermissionMode.chatOnly => 'Chat only',
         AgentPermissionMode.askBeforeEachAction => 'Ask first',
-        AgentPermissionMode.autoApproveProjectReads => 'Project reads',
+        AgentPermissionMode.autoApproveProjectReads => 'Read access',
+        AgentPermissionMode.fullAccess => 'Full access',
       };
 
   IconData get icon => switch (this) {
         AgentPermissionMode.chatOnly => AppIcons.chatBubbleOutlineRounded,
         AgentPermissionMode.askBeforeEachAction => AppIcons.hand,
         AgentPermissionMode.autoApproveProjectReads => AppIcons.shieldCheck,
+        AgentPermissionMode.fullAccess => AppIcons.securityOutlined,
       };
 }
 
@@ -53,10 +57,43 @@ class ProjectAccessMenu extends StatelessWidget {
     return PopupMenuButton<AgentPermissionMode>(
       key: const Key('project.access.menu'),
       enabled: enabled,
-      tooltip: 'Project access: ${value.title}',
+      tooltip: 'Computer access: ${value.title}',
       position: PopupMenuPosition.over,
       constraints: const BoxConstraints(minWidth: 340, maxWidth: 360),
-      onSelected: onChanged,
+      onSelected: (mode) async {
+        if (mode == value) return;
+        if (mode != AgentPermissionMode.fullAccess) {
+          onChanged(mode);
+          return;
+        }
+        final enabled = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            key: const Key('project.access.confirm.dialog'),
+            icon: const Icon(
+              AppIcons.securityOutlined,
+              color: AppColors.amber,
+            ),
+            title: const Text('Enable full access?'),
+            content: const Text(
+              'The connected model can read and edit files anywhere and run commands without asking first. Commands can overwrite or delete data. File contents and command output are sent to your selected provider. Only enable this for a model you trust.',
+            ),
+            actions: [
+              TextButton(
+                key: const Key('project.access.confirm.cancel'),
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                key: const Key('project.access.confirm.enable'),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Enable full access'),
+              ),
+            ],
+          ),
+        );
+        if (enabled == true) onChanged(mode);
+      },
       itemBuilder: (context) => [
         const PopupMenuItem<AgentPermissionMode>(
           enabled: false,
@@ -64,7 +101,7 @@ class ProjectAccessMenu extends StatelessWidget {
           child: Padding(
             padding: EdgeInsets.only(left: 2, top: 4),
             child: Text(
-              'Project access',
+              'Computer access',
               style: TextStyle(
                 color: AppColors.ink,
                 fontSize: 13,
@@ -85,10 +122,18 @@ class ProjectAccessMenu extends StatelessWidget {
                   width: 36,
                   height: 36,
                   decoration: BoxDecoration(
-                    color: AppColors.ice,
+                    color: mode == AgentPermissionMode.fullAccess
+                        ? const Color(0xFFFFF5E5)
+                        : AppColors.ice,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Icon(mode.icon, size: 18, color: AppColors.blueDeep),
+                  child: Icon(
+                    mode.icon,
+                    size: 18,
+                    color: mode == AgentPermissionMode.fullAccess
+                        ? AppColors.amber
+                        : AppColors.blueDeep,
+                  ),
                 ),
                 const SizedBox(width: 11),
                 Expanded(
@@ -147,8 +192,13 @@ class ProjectAccessMenu extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(value.icon,
-                size: compact ? 15 : 17, color: AppColors.blueDeep),
+            Icon(
+              value.icon,
+              size: compact ? 15 : 17,
+              color: value == AgentPermissionMode.fullAccess
+                  ? AppColors.amber
+                  : AppColors.blueDeep,
+            ),
             const SizedBox(width: 6),
             Text(
               compact ? value.compactLabel : value.title,

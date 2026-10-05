@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -12,30 +13,25 @@ class ProjectToolExecutor {
     'search_project_files',
     'read_project_file',
     'edit_project_file',
+    'run_command',
   };
 
   static const maxEditTextBytes = 16 * 1024;
+  static const maxCommandTextBytes = 8 * 1024;
+  static const maxCommandOutputBytes = 16 * 1024;
+  static const commandTimeout = Duration(seconds: 60);
 
   final Map<String, String> _observedFiles = {};
 
-  bool supports(String toolName) => supportedTools.contains(toolName);
+  bool supports(String toolName, {bool fullAccess = false}) =>
+      supportedTools.contains(toolName) &&
+      (fullAccess || toolName != 'run_command');
 
   static const maxListedEntries = 160;
   static const maxScannedFiles = 240;
   static const maxSearchMatches = 30;
   static const maxOutputCharacters = 12000;
 
-  static const _blockedDirectories = <String>{
-    '.dart_tool',
-    '.git',
-    '.venv',
-    'build',
-    'coverage',
-    'dist',
-    'node_modules',
-    'vendor',
-    'venv',
-  };
   static const _blockedExtensions = <String>{'jks', 'key', 'p12', 'pem', 'pfx'};
   static final _sensitiveNamePattern = RegExp(
     r'(^|[._-])(secrets?|credentials?|passwords?|passwd|tokens?)([._-]|$)',
@@ -44,6 +40,9 @@ class ProjectToolExecutor {
   Future<String> execute({
     required String projectPath,
     required AgentToolCall call,
+    bool fullAccess = false,
+    bool allowComputerPaths = false,
+    Future<void>? abortTrigger,
   }) async {
     if (!call.hasValidArguments) {
       return 'Tool error: the arguments were not valid JSON. Retry with valid arguments.';
@@ -52,29 +51,58 @@ class ProjectToolExecutor {
     try {
       final root = await Directory(projectPath).resolveSymbolicLinks();
       return switch (call.name) {
-        'list_project_files' => await _listFiles(root, call.arguments),
-        'search_project_files' => await _searchFiles(root, call.arguments),
-        'read_project_file' => await _readFile(root, call.arguments),
-        'edit_project_file' => await _editFile(root, call.arguments),
+        'list_project_files' => await _listFiles(
+            root,
+            call.arguments,
+            allowComputerPaths: allowComputerPaths,
+          ),
+        'search_project_files' => await _searchFiles(
+            root,
+            call.arguments,
+            allowComputerPaths: allowComputerPaths,
+          ),
+        'read_project_file' => await _readFile(
+            root,
+            call.arguments,
+            fullAccess: fullAccess,
+            allowComputerPaths: allowComputerPaths,
+          ),
+        'edit_project_file' => await _editFile(
+            root,
+            call.arguments,
+            fullAccess: fullAccess,
+            allowComputerPaths: allowComputerPaths,
+          ),
+        'run_command' when fullAccess => await _runCommand(
+            root,
+            call.arguments,
+            abortTrigger: abortTrigger ?? Completer<void>().future,
+          ),
+        'run_command' =>
+          'Tool error: command execution requires Full access mode.',
         _ => 'Tool error: unsupported project tool ${call.name}.',
       };
     } on ProjectAttachmentException catch (error) {
       return 'Tool error: project file action failed. ${error.message}';
     } on FileSystemException {
       return 'Tool error: the selected project folder or requested path is no longer available.';
+    } on ProcessException {
+      return 'Tool error: the command could not be started.';
     } catch (_) {
       return 'Tool error: the project tool could not complete this request.';
     }
   }
 
-  Future<String> _listFiles(
-    String root,
-    Map<String, dynamic> arguments,
-  ) async {
-    final path = await _resolveProjectPath(root, _optionalPath(arguments));
+  Future<String> _listFiles(String root, Map<String, dynamic> arguments,
+      {required bool allowComputerPaths}) async {
+    final path = await _resolveToolPath(
+      root,
+      _optionalPath(arguments),
+      allowComputerPaths: allowComputerPaths,
+    );
     final directory = Directory(path.absolutePath);
     if (!await directory.exists())
-      return 'Tool error: the requested project folder was not found.';
+      return 'Tool error: the requested computer folder was not found.';
     final entries = <String>[];
     var hasMore = false;
     await for (final entity in directory.list(followLinks: false)) {
@@ -92,18 +120,15 @@ class ProjectToolExecutor {
       entries.add('- $relativePath${isDirectory ? '/' : ''}');
     }
     entries.sort();
-    if (entries.isEmpty)
-      return 'No readable project files were found in this folder.';
+    if (entries.isEmpty) return 'No readable files were found in this folder.';
     final suffix =
         hasMore ? '\nShowing the first $maxListedEntries entries.' : '';
     return _bounded(
-        'Project files in ${_displayPath(path.relativePath)}:\n${entries.join('\n')}$suffix');
+        'Computer files in ${_displayPath(path.relativePath)}:\n${entries.join('\n')}$suffix');
   }
 
-  Future<String> _searchFiles(
-    String root,
-    Map<String, dynamic> arguments,
-  ) async {
+  Future<String> _searchFiles(String root, Map<String, dynamic> arguments,
+      {required bool allowComputerPaths}) async {
     final queryValue = arguments['query'];
     if (queryValue is! String || queryValue.trim().isEmpty) {
       return 'Tool error: a non-empty search query is required.';
@@ -111,10 +136,14 @@ class ProjectToolExecutor {
     final query = queryValue.trim();
     if (query.length > 200)
       return 'Tool error: search queries must be 200 characters or fewer.';
-    final basePath = await _resolveProjectPath(root, _optionalPath(arguments));
+    final basePath = await _resolveToolPath(
+      root,
+      _optionalPath(arguments),
+      allowComputerPaths: allowComputerPaths,
+    );
     final baseDirectory = Directory(basePath.absolutePath);
     if (!await baseDirectory.exists())
-      return 'Tool error: the requested project folder was not found.';
+      return 'Tool error: the requested computer folder was not found.';
 
     final pending = <_ResolvedPath>[basePath];
     final matches = <String>[];
@@ -143,8 +172,7 @@ class ProjectToolExecutor {
         }
         if (!_hasSupportedExtension(relativePath)) continue;
         scanned++;
-        final content =
-            await _readSearchableFile(root, entity.path, relativePath);
+        final content = await _readSearchableFile(entity.path, relativePath);
         if (content == null) continue;
         final lines = const LineSplitter().convert(content);
         for (var index = 0; index < lines.length; index++) {
@@ -159,7 +187,7 @@ class ProjectToolExecutor {
     }
 
     if (matches.isEmpty) {
-      return 'No matches for ${jsonEncode(query)} were found in $scanned project files.';
+      return 'No matches for ${jsonEncode(query)} were found in $scanned files.';
     }
     final limitNote =
         scanned >= maxScannedFiles || matches.length >= maxSearchMatches
@@ -172,37 +200,49 @@ class ProjectToolExecutor {
 
   Future<String> _readFile(
     String root,
-    Map<String, dynamic> arguments,
-  ) async {
+    Map<String, dynamic> arguments, {
+    required bool fullAccess,
+    required bool allowComputerPaths,
+  }) async {
     final value = arguments['path'];
     if (value is! String || value.trim().isEmpty) {
-      return 'Tool error: a project-relative file path is required.';
+      return 'Tool error: an absolute computer path or project-relative file path is required.';
     }
-    final requested = await _resolveProjectPath(root, value);
-    if (!_hasSupportedExtension(requested.relativePath)) {
+    final requested = fullAccess
+        ? await _resolveFullAccessFile(root, value)
+        : await _resolveToolPath(
+            root,
+            value,
+            allowComputerPaths: allowComputerPaths,
+          );
+    if (!fullAccess && !_hasSupportedExtension(requested.relativePath)) {
       return 'Tool error: that file type is not available to project read tools.';
     }
-    final loaded = await const ProjectAttachmentLoader().readFiles(
-      projectPath: root,
-      selectedPaths: [requested.absolutePath],
-    );
-    if (loaded.isEmpty)
-      return 'Tool error: the requested project file could not be read.';
-    _observedFiles[_normalize(requested.absolutePath)] = loaded.single.content;
-    return _bounded(
-        'File: ${loaded.single.relativePath}\n\n${loaded.single.content}');
+    final String content;
+    if (fullAccess) {
+      content = await _readFullAccessTextFile(requested.absolutePath);
+    } else {
+      content = await _readSafeTextFile(
+        requested.absolutePath,
+        requested.relativePath,
+      );
+    }
+    _observedFiles[_normalize(requested.absolutePath)] = content;
+    return _bounded('File: ${requested.relativePath}\n\n$content');
   }
 
   Future<String> _editFile(
     String root,
-    Map<String, dynamic> arguments,
-  ) async {
+    Map<String, dynamic> arguments, {
+    required bool fullAccess,
+    required bool allowComputerPaths,
+  }) async {
     final pathValue = arguments['file_path'];
     final oldString = arguments['old_string'];
     final newString = arguments['new_string'];
     if (pathValue is! String || pathValue.trim().isEmpty) {
       throw const ProjectAttachmentException(
-        'A project-relative file path is required.',
+        'An absolute computer path or project-relative file path is required.',
       );
     }
     if (oldString is! String || oldString.isEmpty) {
@@ -222,9 +262,16 @@ class ProjectToolExecutor {
       );
     }
 
-    final requested = await _resolveProjectPath(root, pathValue);
-    if (!_isAllowedPath(requested.relativePath, isDirectory: false) ||
-        !_hasSupportedExtension(requested.relativePath)) {
+    final requested = fullAccess
+        ? await _resolveFullAccessFile(root, pathValue)
+        : await _resolveToolPath(
+            root,
+            pathValue,
+            allowComputerPaths: allowComputerPaths,
+          );
+    if (!fullAccess &&
+        (!_isAllowedPath(requested.relativePath, isDirectory: false) ||
+            !_hasSupportedExtension(requested.relativePath))) {
       throw const ProjectAttachmentException(
         'That file is not available to project edit tools.',
       );
@@ -237,16 +284,12 @@ class ProjectToolExecutor {
       );
     }
 
-    final loaded = await const ProjectAttachmentLoader().readFiles(
-      projectPath: root,
-      selectedPaths: [requested.absolutePath],
-    );
-    if (loaded.isEmpty) {
-      throw const ProjectAttachmentException(
-        'The requested project file could not be read.',
-      );
-    }
-    final currentContent = loaded.single.content;
+    final currentContent = fullAccess
+        ? await _readFullAccessTextFile(requested.absolutePath)
+        : await _readSafeTextFile(
+            requested.absolutePath,
+            requested.relativePath,
+          );
     if (currentContent != observedContent) {
       throw const ProjectAttachmentException(
         'The file changed after it was read. Read it again before editing.',
@@ -286,20 +329,377 @@ class ProjectToolExecutor {
     return 'Updated ${requested.relativePath}.';
   }
 
-  Future<String?> _readSearchableFile(
+  Future<String> _readFullAccessTextFile(String path) async {
+    final bytes = <int>[];
+    await for (final chunk
+        in File(path).openRead(0, ProjectAttachmentLoader.maxFileBytes + 1)) {
+      final remaining = ProjectAttachmentLoader.maxFileBytes + 1 - bytes.length;
+      bytes.addAll(chunk.take(remaining));
+      if (bytes.length > ProjectAttachmentLoader.maxFileBytes) {
+        throw const ProjectAttachmentException(
+          'The file is larger than 64 KiB. Choose a smaller text file.',
+        );
+      }
+    }
+    try {
+      return utf8.decode(bytes);
+    } on FormatException {
+      throw const ProjectAttachmentException(
+        'The file is not UTF-8 text and cannot be read or edited here.',
+      );
+    }
+  }
+
+  Future<String> _readSafeTextFile(String path, String displayPath) async {
+    final bytes = <int>[];
+    try {
+      await for (final chunk
+          in File(path).openRead(0, ProjectAttachmentLoader.maxFileBytes + 1)) {
+        final remaining =
+            ProjectAttachmentLoader.maxFileBytes + 1 - bytes.length;
+        bytes.addAll(chunk.take(remaining));
+        if (bytes.length > ProjectAttachmentLoader.maxFileBytes) {
+          throw ProjectAttachmentException(
+            '$displayPath is larger than 64 KiB. Choose a smaller text file.',
+          );
+        }
+      }
+    } on FileSystemException {
+      throw const ProjectAttachmentException(
+        'The requested file could not be read. Check its permissions and try again.',
+      );
+    }
+    try {
+      return utf8.decode(bytes);
+    } on FormatException {
+      throw ProjectAttachmentException(
+        '$displayPath is not UTF-8 text and cannot be read or edited here.',
+      );
+    }
+  }
+
+  Future<_ResolvedPath> _resolveFullAccessFile(
     String root,
+    String requested,
+  ) async {
+    final path = _expandHomePath(requested.trim());
+    final candidate = _isAbsolutePath(path) ? path : _joinPath(root, path);
+    final type = await FileSystemEntity.type(candidate);
+    if (type == FileSystemEntityType.notFound) {
+      throw const ProjectAttachmentException(
+          'The requested file was not found.');
+    }
+    if (type != FileSystemEntityType.file) {
+      throw const ProjectAttachmentException(
+          'The requested path is not a file.');
+    }
+    final resolved = await File(candidate).resolveSymbolicLinks();
+    return _ResolvedPath(
+      relativePath: _displayFullAccessPath(root, resolved),
+      absolutePath: resolved,
+    );
+  }
+
+  Future<String> _runCommand(
+    String projectRoot,
+    Map<String, dynamic> arguments, {
+    required Future<void> abortTrigger,
+  }) async {
+    final command = arguments['command'];
+    if (command is! String || command.trim().isEmpty) {
+      throw const ProjectAttachmentException(
+        'A non-empty shell command is required.',
+      );
+    }
+    if (utf8.encode(command).length > maxCommandTextBytes) {
+      throw const ProjectAttachmentException(
+        'Commands cannot exceed 8 KiB.',
+      );
+    }
+    final requestedDirectory = arguments['working_directory'];
+    if (requestedDirectory != null && requestedDirectory is! String) {
+      throw const ProjectAttachmentException(
+        'The working directory must be a path string.',
+      );
+    }
+    final workingDirectory = await _resolveWorkingDirectory(
+      projectRoot,
+      requestedDirectory is String && requestedDirectory.trim().isNotEmpty
+          ? requestedDirectory.trim()
+          : projectRoot,
+    );
+
+    final Process process;
+    try {
+      process = await Process.start(
+        Platform.isWindows ? 'powershell.exe' : '/bin/sh',
+        Platform.isWindows
+            ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command]
+            : ['-lc', command],
+        workingDirectory: workingDirectory,
+      );
+    } on ProcessException {
+      return 'Tool error: the command shell could not be started.';
+    }
+
+    final stdout = StringBuffer();
+    final stderr = StringBuffer();
+    var outputBytes = 0;
+    var truncated = false;
+    void appendOutput(StringBuffer destination, String text) {
+      final encoded = utf8.encode(text);
+      final remaining = maxCommandOutputBytes - outputBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      final included = encoded.length <= remaining
+          ? encoded
+          : encoded.take(remaining).toList(growable: false);
+      destination.write(utf8.decode(included, allowMalformed: true));
+      outputBytes += included.length;
+      if (included.length != encoded.length) truncated = true;
+    }
+
+    final stdoutDone = Completer<void>();
+    final stderrDone = Completer<void>();
+    final stdoutSubscription = process.stdout
+        .transform(const Utf8Decoder(allowMalformed: true))
+        .listen((text) => appendOutput(stdout, text),
+            onDone: stdoutDone.complete);
+    final stderrSubscription = process.stderr
+        .transform(const Utf8Decoder(allowMalformed: true))
+        .listen((text) => appendOutput(stderr, text),
+            onDone: stderrDone.complete);
+
+    final timeout = Completer<_CommandStop>();
+    final timer = Timer(
+      commandTimeout,
+      () => timeout.complete(_CommandStop.timedOut),
+    );
+    final Object outcome;
+    try {
+      outcome = await Future.any<Object>([
+        process.exitCode,
+        abortTrigger.then((_) => _CommandStop.cancelled),
+        timeout.future,
+      ]);
+    } finally {
+      timer.cancel();
+    }
+
+    final int exitCode;
+    if (outcome is _CommandStop) {
+      process.kill();
+      exitCode = await process.exitCode.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => -1,
+      );
+    } else {
+      exitCode = outcome as int;
+    }
+    try {
+      await Future.wait([stdoutDone.future, stderrDone.future]).timeout(
+        const Duration(seconds: 2),
+      );
+    } on TimeoutException {
+      await stdoutSubscription.cancel();
+      await stderrSubscription.cancel();
+    }
+
+    final result = StringBuffer()
+      ..writeln('Working directory: $workingDirectory')
+      ..writeln('Exit code: $exitCode');
+    if (stdout.isNotEmpty)
+      result
+        ..writeln('stdout:')
+        ..write(stdout);
+    if (stderr.isNotEmpty)
+      result
+        ..writeln('stderr:')
+        ..write(stderr);
+    if (truncated) result.write('\n[Command output truncated at 16 KiB.]');
+    final output = result.toString();
+    return switch (outcome) {
+      _CommandStop.cancelled =>
+        'Tool cancelled: command stopped by the user.\n$output',
+      _CommandStop.timedOut =>
+        'Tool error: command timed out after 60 seconds.\n$output',
+      int code when code != 0 =>
+        'Tool error: command exited with code $code.\n$output',
+      _ => 'Command completed successfully.\n$output',
+    };
+  }
+
+  Future<String> _resolveWorkingDirectory(
+    String projectRoot,
+    String requested,
+  ) async {
+    final path = _expandHomePath(requested);
+    final candidate =
+        _isAbsolutePath(path) ? path : _joinPath(projectRoot, path);
+    final type = await FileSystemEntity.type(candidate);
+    if (type == FileSystemEntityType.notFound) {
+      throw const ProjectAttachmentException(
+        'The command working directory does not exist.',
+      );
+    }
+    if (type != FileSystemEntityType.directory) {
+      throw const ProjectAttachmentException(
+        'The command working directory must be a folder.',
+      );
+    }
+    return Directory(candidate).resolveSymbolicLinks();
+  }
+
+  String _expandHomePath(String path) {
+    if (path == '~' || path.startsWith('~/') || path.startsWith(r'~\')) {
+      final home = Platform.isWindows
+          ? Platform.environment['USERPROFILE']
+          : Platform.environment['HOME'];
+      if (home != null && home.isNotEmpty) {
+        return path == '~' ? home : _joinPath(home, path.substring(2));
+      }
+    }
+    return path;
+  }
+
+  bool _isAbsolutePath(String path) => Platform.isWindows
+      ? RegExp(r'^[a-zA-Z]:[\\/]').hasMatch(path) || path.startsWith(r'\\')
+      : path.startsWith('/');
+
+  String _joinPath(String directory, String path) {
+    final normalized =
+        path.replaceAll(RegExp(r'[\\/]'), Platform.pathSeparator);
+    final base = directory.endsWith(Platform.pathSeparator)
+        ? directory
+        : '$directory${Platform.pathSeparator}';
+    return '$base$normalized';
+  }
+
+  String _displayFullAccessPath(String root, String absolutePath) {
+    final normalizedRoot = _normalize(root);
+    final normalizedPath = _normalize(absolutePath);
+    final prefix =
+        normalizedRoot.endsWith('/') ? normalizedRoot : '$normalizedRoot/';
+    if (normalizedPath == normalizedRoot) return '.';
+    if (normalizedPath.startsWith(prefix)) {
+      return absolutePath.substring(prefix.length);
+    }
+    return absolutePath;
+  }
+
+  Future<String?> _readSearchableFile(
     String absolutePath,
     String relativePath,
   ) async {
     try {
-      final loaded = await const ProjectAttachmentLoader().readFiles(
-        projectPath: root,
-        selectedPaths: [absolutePath],
-      );
-      return loaded.isEmpty ? null : loaded.single.content;
+      return await _readSafeTextFile(absolutePath, relativePath);
     } on ProjectAttachmentException {
       return null;
     }
+  }
+
+  Future<_ResolvedPath> _resolveToolPath(
+    String root,
+    String requested, {
+    required bool allowComputerPaths,
+  }) async {
+    final expanded = _expandHomePath(requested.trim());
+    if (allowComputerPaths && _isAbsolutePath(expanded)) {
+      return _resolveComputerPath(root, expanded);
+    }
+    return _resolveProjectPath(root, expanded);
+  }
+
+  Future<_ResolvedPath> _resolveComputerPath(
+      String projectRoot, String path) async {
+    final normalized = path.replaceAll(r'\', '/');
+    late final String pathRoot;
+    late final String remainder;
+    late final List<String> rootSegments;
+    if (Platform.isWindows) {
+      final drive = RegExp(r'^([a-zA-Z]:)/').firstMatch(normalized);
+      if (drive != null) {
+        pathRoot = '${drive.group(1)}${Platform.pathSeparator}';
+        remainder = normalized.substring(drive.end);
+        rootSegments = const [];
+      } else if (normalized.startsWith('//')) {
+        final parts = normalized.substring(2).split('/');
+        if (parts.length < 2 ||
+            parts[0].isEmpty ||
+            parts[1].isEmpty ||
+            parts[0] == '.' ||
+            parts[0] == '?' ||
+            parts[1].contains(':')) {
+          throw const ProjectAttachmentException(
+            'Use a complete computer path with a drive or shared folder.',
+          );
+        }
+        pathRoot =
+            '${Platform.pathSeparator}${Platform.pathSeparator}${parts[0]}${Platform.pathSeparator}${parts[1]}${Platform.pathSeparator}';
+        remainder = parts.skip(2).join('/');
+        rootSegments = parts.take(2).toList(growable: false);
+      } else {
+        throw const ProjectAttachmentException(
+          'Use an absolute path to access another computer folder.',
+        );
+      }
+    } else {
+      if (!normalized.startsWith('/')) {
+        throw const ProjectAttachmentException(
+          'Use an absolute path to access another computer folder.',
+        );
+      }
+      pathRoot = '/';
+      remainder = normalized.substring(1);
+      rootSegments = const [];
+    }
+
+    final segments = remainder.split('/')
+      ..removeWhere((segment) => segment.isEmpty || segment == '.');
+    if (segments.any((segment) => segment == '..' || segment.contains(':'))) {
+      throw const ProjectAttachmentException(
+        'The requested path cannot contain parent-directory traversal.',
+      );
+    }
+    final displayPath = [...rootSegments, ...segments].join('/');
+    if (!_isAllowedPath(displayPath, isDirectory: true)) {
+      throw const ProjectAttachmentException(
+        'That computer path is restricted.',
+      );
+    }
+
+    var candidate = pathRoot;
+    for (final segment in segments) {
+      candidate = _joinPath(candidate, segment);
+      final type = await FileSystemEntity.type(candidate, followLinks: false);
+      if (type == FileSystemEntityType.link) {
+        throw const ProjectAttachmentException(
+          'Symbolic links are not available to file tools.',
+        );
+      }
+      if (type == FileSystemEntityType.notFound) {
+        throw const ProjectAttachmentException(
+          'The requested computer file or folder does not exist.',
+        );
+      }
+    }
+    final type = await FileSystemEntity.type(candidate, followLinks: false);
+    if (type != FileSystemEntityType.file &&
+        type != FileSystemEntityType.directory) {
+      throw const ProjectAttachmentException(
+        'The requested computer path is not a file or folder.',
+      );
+    }
+    final resolved = type == FileSystemEntityType.file
+        ? await File(candidate).resolveSymbolicLinks()
+        : await Directory(candidate).resolveSymbolicLinks();
+    return _ResolvedPath(
+      relativePath:
+          _displayFullAccessPath(projectRoot, resolved).replaceAll(r'\', '/'),
+      absolutePath: resolved,
+    );
   }
 
   Future<_ResolvedPath> _resolveProjectPath(
@@ -365,11 +765,13 @@ class ProjectToolExecutor {
   }
 
   bool _isAllowedPath(String path, {required bool isDirectory}) {
-    final segments = path.split('/').where((segment) => segment.isNotEmpty);
+    final segments = path
+        .replaceAll(r'\', '/')
+        .split('/')
+        .where((segment) => segment.isNotEmpty);
     for (final segment in segments) {
       final name = segment.toLowerCase();
-      if (_blockedDirectories.contains(name) ||
-          name.startsWith('.env') ||
+      if (name.startsWith('.env') ||
           _sensitiveNamePattern.hasMatch(name) ||
           name.startsWith('id_rsa') ||
           name.startsWith('id_ed25519')) {
@@ -414,3 +816,5 @@ class _ResolvedPath {
   final String relativePath;
   final String absolutePath;
 }
+
+enum _CommandStop { cancelled, timedOut }
