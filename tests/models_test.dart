@@ -30,4 +30,49 @@ void main() {
 
     expect(provider.routeLabel, 'Remote API · Model name');
   });
+
+  test('persists subagent continuation context without provider credentials',
+      () {
+    final task = AgentTask(
+      id: 'task-1',
+      prompt: 'Review the project',
+      status: AgentTaskStatus.stopped,
+      parentChatId: 'parent-chat',
+      projectId: 'project-1',
+      projectPath: r'C:\work\project',
+      activeSkillIds: const ['material-3'],
+      providerId: 'provider-1',
+      providerName: 'Example provider',
+      modelId: 'model-1',
+      permissionMode: AgentPermissionMode.autoApproveProjectReads,
+      createdAt: DateTime.utc(2026, 10, 5),
+      reasoningEffortId: 'medium',
+    );
+
+    final restored = AgentTask.fromJson(task.toJson());
+
+    expect(restored, isNotNull);
+    expect(restored!.id, task.id);
+    expect(restored.parentChatId, task.parentChatId);
+    expect(restored.projectPath, task.projectPath);
+    expect(restored.activeSkillIds, task.activeSkillIds);
+    expect(restored.providerId, task.providerId);
+    expect(restored.modelId, task.modelId);
+    expect(restored.permissionMode, task.permissionMode);
+    expect(restored.reasoningEffortId, task.reasoningEffortId);
+    expect(task.toJson().containsKey('apiKey'), isFalse);
+  });
+
+  test('ignores malformed optional subagent metadata safely', () {
+    final task = AgentTask.fromJson({
+      'id': 'task-2',
+      'prompt': 'Review the project',
+      'createdAt': 12,
+      'activeSkillIds': 'invalid',
+    });
+
+    expect(task, isNotNull);
+    expect(task!.createdAt, isNull);
+    expect(task.activeSkillIds, isEmpty);
+  });
 }

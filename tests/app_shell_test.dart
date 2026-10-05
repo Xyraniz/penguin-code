@@ -1546,6 +1546,7 @@ void main() {
     await _setDesktopSize(tester);
     final requests = <Map<String, dynamic>>[];
     var responseIndex = 0;
+    String? childTaskId;
     final client = OpenAiCompatibleChatClient(
       client: _FakeChatClient((request) async {
         requests.add(
@@ -1560,7 +1561,33 @@ void main() {
               id: 'delegate-auth-review',
             ),
           1 => _sseChunk('The flow has one missing token expiry check.'),
-          _ => _sseChunk('The review found one token expiry risk.'),
+          2 => _sseChunk('The review found one token expiry risk.'),
+          3 =>
+            _sseChunk('I verified the expiry check in the saved transcript.'),
+          4 => _sseToolCall(
+              name: 'list_subagent_tasks',
+              arguments: '{}',
+              id: 'list-auth-review',
+            ),
+          5 => () {
+              final messages = requests.last['messages'] as List<dynamic>;
+              final listing = messages
+                  .whereType<Map<String, dynamic>>()
+                  .lastWhere((message) => message['role'] == 'tool');
+              childTaskId = RegExp(r'id: ([^\n]+)')
+                  .firstMatch(listing['content'].toString())
+                  ?.group(1);
+              return _sseToolCall(
+                name: 'continue_subagent_task',
+                arguments: jsonEncode({
+                  'task_id': childTaskId,
+                  'message': 'Summarize the verified finding.',
+                }),
+                id: 'continue-auth-review',
+              );
+            }(),
+          6 => _sseChunk('The finding is an expired token check.'),
+          _ => _sseChunk('The continued review confirms the expiry finding.'),
         };
         return _chatResponse('$response\ndata: [DONE]\n\n');
       }),
@@ -1628,6 +1655,228 @@ void main() {
       find.textContaining('The flow has one missing token expiry check.'),
       findsOneWidget,
     );
+
+    final savedTasks = await tester.runAsync(_testDataStore.loadConversations);
+    expect(savedTasks, isNotNull);
+    expect(
+      savedTasks!.where((saved) => saved.agentTask != null),
+      hasLength(1),
+    );
+    final task = savedTasks.singleWhere((saved) => saved.agentTask != null);
+    expect(task.agentTask?.status, AgentTaskStatus.completed);
+    expect(task.agentTask?.parentChatId, isNotNull);
+    expect(task.messages, hasLength(2));
+
+    await tester.tap(find.byKey(Key('agents.continue.${task.agentTask!.id}')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('agents.task.followup.input')),
+      'Verify the finding and update the summary.',
+    );
+    await tester.tap(find.byKey(const Key('agents.task.followup.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.text('I verified the expiry check in the saved transcript.'),
+    );
+
+    expect(requests, hasLength(4));
+    final continuedMessages = requests.last['messages'] as List<dynamic>;
+    expect(
+      continuedMessages.whereType<Map<String, dynamic>>().map(
+            (message) => message['content'],
+          ),
+      containsAll([
+        'Inspect the authentication flow and summarize risks.',
+        'The flow has one missing token expiry check.',
+        'Verify the finding and update the summary.',
+      ]),
+    );
+
+    await tester.tap(find.text('Chat').first);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'List my subagent tasks and summarize the review.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.text('The continued review confirms the expiry finding.'),
+    );
+    expect(childTaskId, task.agentTask!.id);
+    expect(requests, hasLength(8));
+    final managementTools = (requests[4]['tools'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map((tool) =>
+            (tool['function'] as Map<String, dynamic>)['name'] as String)
+        .toSet();
+    expect(
+        managementTools,
+        containsAll([
+          'list_subagent_tasks',
+          'continue_subagent_task',
+          'stop_subagent_task',
+        ]));
+    final childContinuationRequest = requests[6]['messages'] as List<dynamic>;
+    expect(
+      childContinuationRequest.whereType<Map<String, dynamic>>().any(
+          (message) =>
+              message['role'] == 'user' &&
+              message['content'] == 'Summarize the verified finding.'),
+      isTrue,
+    );
+    final continuationResult = (requests[7]['messages'] as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .lastWhere((message) => message['role'] == 'tool');
+    expect(
+      continuationResult['content'].toString(),
+      contains('The finding is an expired token check.'),
+    );
+
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('settings.subagents')));
+    await tester.tap(find.byKey(const Key('settings.subagents')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('topbar.agents')));
+    await tester.pumpAndSettle();
+    await _pumpUntilVisible(
+      tester,
+      find.text('Inspect the authentication flow and summarize risks.'),
+    );
+    expect(
+      find.text('Inspect the authentication flow and summarize risks.'),
+      findsOneWidget,
+    );
+    expect(find.text('Completed'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextButton>(
+            find.byKey(Key('agents.continue.${task.agentTask!.id}')),
+          )
+          .onPressed,
+      isNull,
+    );
+    final finalSavedTasks =
+        await tester.runAsync(_testDataStore.loadConversations);
+    expect(
+      finalSavedTasks!
+          .singleWhere((saved) => saved.agentTask != null)
+          .agentTask
+          ?.result,
+      'The finding is an expired token check.',
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(_testApp(initialProjects: const [_testProject]));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 150)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('topbar.agents')));
+    await tester.pumpAndSettle();
+    await _pumpUntilVisible(
+      tester,
+      find.text('Inspect the authentication flow and summarize risks.'),
+    );
+    expect(
+      find.text('Inspect the authentication flow and summarize risks.'),
+      findsOneWidget,
+    );
+    expect(find.text('Completed'), findsOneWidget);
+    expect(find.textContaining('The finding is an expired token check.'),
+        findsOneWidget);
+  });
+
+  testWidgets('loads nested AGENTS.md before accessing that project folder', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final projectDirectory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('penguin-agents-context-'),
+    ))!;
+    final nestedDirectory = Directory(
+      '${projectDirectory.path}${Platform.pathSeparator}packages',
+    )..createSync();
+    await tester.runAsync(() async {
+      await File('${projectDirectory.path}${Platform.pathSeparator}AGENTS.md')
+          .writeAsString('Root instruction: use the project format.');
+      await File('${nestedDirectory.path}${Platform.pathSeparator}AGENTS.md')
+          .writeAsString('Nested instruction: inspect package rules first.');
+      await File('${nestedDirectory.path}${Platform.pathSeparator}README.md')
+          .writeAsString('Package contents.');
+    });
+    addTearDown(() => tester.runAsync(
+          () => projectDirectory.delete(recursive: true),
+        ));
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requests.add(
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+        );
+        final response = responseIndex++ == 0
+            ? _sseToolCall(
+                name: 'read_project_file',
+                arguments: '{"path":"packages/README.md"}',
+                id: 'read-package-readme',
+              )
+            : _sseChunk('I reviewed the package instructions first.');
+        return _chatResponse('$response\ndata: [DONE]\n\n');
+      }),
+    );
+    final project = Project(
+      id: 'agents-project',
+      name: 'Instruction project',
+      path: projectDirectory.path,
+    );
+    await tester.pumpWidget(
+      _testApp(initialProjects: [project], chatClient: client),
+    );
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+    await _startProjectChatFor(tester, project.id);
+    await tester.tap(find.byKey(const Key('project.access.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('project.access.option.autoApproveProjectReads')),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Read the package README and summarize it.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.text('I reviewed the package instructions first.'),
+    );
+
+    expect(requests, hasLength(2));
+    String systemContext(Map<String, dynamic> request) =>
+        (request['messages'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .where((message) => message['role'] == 'system')
+            .map((message) => message['content'].toString())
+            .join('\n');
+    expect(
+      systemContext(requests.first),
+      contains('Root instruction: use the project format.'),
+    );
+    expect(
+      systemContext(requests.first),
+      isNot(contains('Nested instruction: inspect package rules first.')),
+    );
+    expect(
+      systemContext(requests.last),
+      contains('Nested instruction: inspect package rules first.'),
+    );
+    final pausedToolResult = (requests.last['messages'] as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .lastWhere((message) => message['role'] == 'tool');
+    expect(pausedToolResult['content'], contains('action was paused'));
+    expect(pausedToolResult['content'], isNot(contains('Package contents.')));
   });
 
   testWidgets('subagent file actions use the selected approval mode', (

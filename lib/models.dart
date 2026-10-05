@@ -295,6 +295,15 @@ class AgentTask {
     this.result = '',
     this.error,
     this.parentChatId,
+    this.projectId,
+    this.projectPath,
+    this.activeSkillIds = const [],
+    this.providerId,
+    this.providerName,
+    this.modelId,
+    this.permissionMode = AgentPermissionMode.askBeforeEachAction,
+    this.createdAt,
+    this.reasoningEffortId,
   });
 
   final String id;
@@ -303,12 +312,116 @@ class AgentTask {
   final String result;
   final String? error;
   final String? parentChatId;
+  final String? projectId;
+  final String? projectPath;
+  final List<String> activeSkillIds;
+  final String? providerId;
+  final String? providerName;
+  final String? modelId;
+  final AgentPermissionMode permissionMode;
+  final DateTime? createdAt;
+  final String? reasoningEffortId;
+
+  Map<String, Object?> toJson() => {
+        'id': id,
+        'prompt': prompt,
+        'status': status.name,
+        'result': result,
+        'error': error,
+        'parentChatId': parentChatId,
+        'projectId': projectId,
+        'projectPath': projectPath,
+        'activeSkillIds': activeSkillIds,
+        'providerId': providerId,
+        'providerName': providerName,
+        'modelId': modelId,
+        'permissionMode': permissionMode.name,
+        'createdAt': createdAt?.toIso8601String(),
+        'reasoningEffortId': reasoningEffortId,
+      };
+
+  static AgentTask? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final id = value['id'];
+    final prompt = value['prompt'];
+    if (id is! String || id.trim().isEmpty || id.length > 160) return null;
+    if (prompt is! String || prompt.trim().isEmpty || prompt.length > 4096) {
+      return null;
+    }
+    T enumValue<T extends Enum>(List<T> values, Object? name, T fallback) {
+      for (final item in values) {
+        if (item.name == name) return item;
+      }
+      return fallback;
+    }
+
+    String boundedString(String key, int maxLength, {String fallback = ''}) {
+      final candidate = value[key];
+      if (candidate is! String) return fallback;
+      return candidate.substring(
+        0,
+        candidate.length.clamp(0, maxLength).toInt(),
+      );
+    }
+
+    String? optionalString(String key, int maxLength) {
+      final candidate = value[key];
+      if (candidate is! String) return null;
+      return candidate.substring(
+        0,
+        candidate.length.clamp(0, maxLength).toInt(),
+      );
+    }
+
+    return AgentTask(
+      id: id,
+      prompt: prompt,
+      status: enumValue(
+        AgentTaskStatus.values,
+        value['status'],
+        AgentTaskStatus.stopped,
+      ),
+      result: boundedString('result', 12000),
+      error: optionalString('error', 4000),
+      parentChatId: optionalString('parentChatId', 160),
+      projectId: optionalString('projectId', 2048),
+      projectPath: optionalString('projectPath', 4096),
+      activeSkillIds: (value['activeSkillIds'] is List
+              ? value['activeSkillIds'] as List
+              : const <Object?>[])
+          .whereType<String>()
+          .where((item) => item.length <= 120)
+          .take(20)
+          .toList(growable: false),
+      providerId: optionalString('providerId', 160),
+      providerName: optionalString('providerName', 120),
+      modelId: optionalString('modelId', 300),
+      permissionMode: enumValue(
+        AgentPermissionMode.values,
+        value['permissionMode'],
+        AgentPermissionMode.askBeforeEachAction,
+      ),
+      createdAt: DateTime.tryParse(
+        value['createdAt'] is String ? value['createdAt'] as String : '',
+      ),
+      reasoningEffortId: optionalString('reasoningEffortId', 120),
+    );
+  }
 
   AgentTask copyWith({
     AgentTaskStatus? status,
     String? result,
     String? error,
     String? parentChatId,
+    String? projectId,
+    String? projectPath,
+    List<String>? activeSkillIds,
+    String? providerId,
+    String? providerName,
+    String? modelId,
+    AgentPermissionMode? permissionMode,
+    DateTime? createdAt,
+    String? reasoningEffortId,
     bool clearError = false,
   }) =>
       AgentTask(
@@ -318,6 +431,15 @@ class AgentTask {
         result: result ?? this.result,
         error: clearError ? null : error ?? this.error,
         parentChatId: parentChatId ?? this.parentChatId,
+        projectId: projectId ?? this.projectId,
+        projectPath: projectPath ?? this.projectPath,
+        activeSkillIds: activeSkillIds ?? this.activeSkillIds,
+        providerId: providerId ?? this.providerId,
+        providerName: providerName ?? this.providerName,
+        modelId: modelId ?? this.modelId,
+        permissionMode: permissionMode ?? this.permissionMode,
+        createdAt: createdAt ?? this.createdAt,
+        reasoningEffortId: reasoningEffortId ?? this.reasoningEffortId,
       );
 }
 

@@ -4,10 +4,15 @@ import 'dart:io';
 import '../models.dart';
 
 class SavedConversation {
-  const SavedConversation({required this.conversation, required this.messages});
+  const SavedConversation({
+    required this.conversation,
+    required this.messages,
+    this.agentTask,
+  });
 
   final ChatConversation conversation;
   final List<ChatMessage> messages;
+  final AgentTask? agentTask;
 }
 
 class ChatDirectories {
@@ -163,12 +168,16 @@ class AgentDataStore {
 
   Future<void> saveConversation(
     ChatConversation conversation,
-    List<ChatMessage> messages,
-  ) async {
+    List<ChatMessage> messages, {
+    AgentTask? agentTask,
+  }) async {
     final previous = _pendingWrites[conversation.id] ?? Future<void>.value();
-    final next = previous
-        .catchError((Object _) {})
-        .then((_) => _writeConversation(conversation, messages));
+    final next =
+        previous.catchError((Object _) {}).then((_) => _writeConversation(
+              conversation,
+              messages,
+              agentTask: agentTask,
+            ));
     _pendingWrites[conversation.id] = next;
     try {
       await next;
@@ -181,8 +190,9 @@ class AgentDataStore {
 
   Future<void> _writeConversation(
     ChatConversation conversation,
-    List<ChatMessage> messages,
-  ) async {
+    List<ChatMessage> messages, {
+    AgentTask? agentTask,
+  }) async {
     final directories = await directoriesFor(conversation);
     final file = File(_join([directories.root.path, 'chat.json']));
     final tempFile = File('${file.path}.tmp');
@@ -190,6 +200,7 @@ class AgentDataStore {
       'schemaVersion': 1,
       'conversation': _conversationToJson(conversation),
       'messages': messages.map(_messageToJson).toList(growable: false),
+      if (agentTask != null) 'agentTask': agentTask.toJson(),
     };
     await tempFile.writeAsString(jsonEncode(payload), flush: true);
     if (file.existsSync()) await file.delete();
@@ -229,9 +240,11 @@ class AgentDataStore {
                       Map<String, dynamic>.from(value),
                     ))
                 .toList(growable: true);
+            final savedTask = AgentTask.fromJson(decoded['agentTask']);
             result.add(SavedConversation(
               conversation: conversation,
               messages: messages,
+              agentTask: savedTask?.id == conversation.id ? savedTask : null,
             ));
           } on Object {
             // A damaged chat is skipped without hiding the remaining history.

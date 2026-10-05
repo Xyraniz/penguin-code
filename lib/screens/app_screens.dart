@@ -1749,6 +1749,7 @@ class AgentsScreen extends StatefulWidget {
     required this.tasks,
     required this.taskMessages,
     required this.onAddTask,
+    required this.onContinueTask,
     required this.onOpenSettings,
     required this.onStopTask,
     required this.onApproveTool,
@@ -1763,6 +1764,7 @@ class AgentsScreen extends StatefulWidget {
   final List<AgentTask> tasks;
   final Map<String, List<ChatMessage>> taskMessages;
   final ValueChanged<String> onAddTask;
+  final void Function(String taskId, String prompt) onContinueTask;
   final VoidCallback onOpenSettings;
   final ValueChanged<String> onStopTask;
   final ValueChanged<String> onApproveTool;
@@ -1784,6 +1786,16 @@ class _AgentsScreenState extends State<AgentsScreen> {
     );
     if (prompt == null || prompt.isEmpty || !mounted) return;
     widget.onAddTask(prompt);
+  }
+
+  Future<void> _continueTask(AgentTask task) async {
+    if (!widget.enabled || !widget.hasProvider) return;
+    final prompt = await showDialog<String>(
+      context: context,
+      builder: (context) => _ContinueTaskDialog(task: task),
+    );
+    if (prompt == null || prompt.isEmpty || !mounted) return;
+    widget.onContinueTask(task.id, prompt);
   }
 
   @override
@@ -1812,7 +1824,32 @@ class _AgentsScreenState extends State<AgentsScreen> {
             ],
           ),
           const SizedBox(height: 24),
-          if (!widget.enabled)
+          if (widget.tasks.isNotEmpty &&
+              (!widget.enabled || !widget.hasProvider))
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Card(
+                child: ListTile(
+                  leading: Icon(
+                    widget.enabled
+                        ? AppIcons.autoAwesomeOutlined
+                        : AppIcons.hubOutlined,
+                    color: AppColors.blueDeep,
+                  ),
+                  title: Text(widget.enabled
+                      ? 'Choose a provider to continue tasks'
+                      : 'Subagents are off'),
+                  subtitle: Text(widget.enabled
+                      ? 'Saved tasks and results remain available. Add or select a provider to continue one.'
+                      : 'Saved tasks and results remain available. Enable Subagents in Settings to create or continue tasks.'),
+                  trailing: TextButton(
+                    onPressed: widget.onOpenSettings,
+                    child: const Text('Open Settings'),
+                  ),
+                ),
+              ),
+            ),
+          if (widget.tasks.isEmpty && !widget.enabled)
             _EmptyPanel(
               icon: AppIcons.hubOutlined,
               title: 'Subagents are off',
@@ -1821,7 +1858,7 @@ class _AgentsScreenState extends State<AgentsScreen> {
               actionLabel: 'Open Settings',
               onAction: widget.onOpenSettings,
             )
-          else if (!widget.hasProvider)
+          else if (widget.tasks.isEmpty && !widget.hasProvider)
             _EmptyPanel(
               icon: AppIcons.autoAwesomeOutlined,
               title: 'Add a model provider',
@@ -1900,6 +1937,17 @@ class _AgentsScreenState extends State<AgentsScreen> {
                                         fontSize: 11,
                                       ),
                                     ),
+                                    if (task.providerName != null ||
+                                        task.modelId != null) ...[
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        '${task.providerName ?? 'Provider'} · ${task.modelId ?? 'Model'} · ${_permissionLabel(task.permissionMode)}',
+                                        style: const TextStyle(
+                                          color: AppColors.muted,
+                                          fontSize: 10,
+                                        ),
+                                      ),
+                                    ],
                                   ],
                                 ),
                               ),
@@ -1915,6 +1963,20 @@ class _AgentsScreenState extends State<AgentsScreen> {
                                   key: Key('agents.stop.${task.id}'),
                                   onPressed: () => widget.onStopTask(task.id),
                                   child: const Text('Stop'),
+                                ),
+                              ] else if (task.status ==
+                                      AgentTaskStatus.completed ||
+                                  task.status == AgentTaskStatus.failed ||
+                                  task.status == AgentTaskStatus.stopped) ...[
+                                TextButton.icon(
+                                  key: Key('agents.continue.${task.id}'),
+                                  onPressed:
+                                      widget.enabled && widget.hasProvider
+                                          ? () => _continueTask(task)
+                                          : null,
+                                  icon: const Icon(AppIcons.refreshRounded,
+                                      size: 16),
+                                  label: const Text('Continue'),
                                 ),
                               ],
                             ],
@@ -1953,6 +2015,84 @@ class _AgentsScreenState extends State<AgentsScreen> {
             ),
         ],
       ),
+    );
+  }
+
+  String _permissionLabel(AgentPermissionMode mode) => switch (mode) {
+        AgentPermissionMode.chatOnly => 'Chat only',
+        AgentPermissionMode.askBeforeEachAction => 'Ask before every action',
+        AgentPermissionMode.autoApproveProjectReads => 'Auto-approve reads',
+        AgentPermissionMode.fullAccess => 'Full access',
+      };
+}
+
+class _ContinueTaskDialog extends StatefulWidget {
+  const _ContinueTaskDialog({required this.task});
+
+  final AgentTask task;
+
+  @override
+  State<_ContinueTaskDialog> createState() => _ContinueTaskDialogState();
+}
+
+class _ContinueTaskDialogState extends State<_ContinueTaskDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() => Navigator.pop(context, _controller.text.trim());
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      icon: const Icon(AppIcons.hubOutlined, color: AppColors.blue),
+      title: const Text('Continue subagent task'),
+      content: SizedBox(
+        width: 460,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.task.prompt,
+                maxLines: 3, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 12),
+            const Text(
+              'The current computer-access setting applies. The saved provider and model are reused when available; otherwise the selected provider and model are used.',
+              style: TextStyle(
+                color: AppColors.muted,
+                fontSize: 12,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('agents.task.followup.input'),
+              controller: _controller,
+              autofocus: true,
+              minLines: 3,
+              maxLines: 6,
+              decoration: const InputDecoration(
+                hintText: 'Describe the next step for this task…',
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('agents.task.followup.send'),
+          onPressed: _submit,
+          child: const Text('Send follow-up'),
+        ),
+      ],
     );
   }
 }
