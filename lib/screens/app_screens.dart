@@ -1302,6 +1302,7 @@ class _ToolActionCard extends StatelessWidget {
             'read_project_file' => 'Read a file',
             'edit_project_file' => 'Edit a file',
             'run_command' => 'Run a command',
+            'delegate_task' => 'Delegate task',
             _ => 'Computer file action',
           };
     final isEdit = message.toolName == 'edit_project_file';
@@ -1315,6 +1316,7 @@ class _ToolActionCard extends StatelessWidget {
       'list_project_files' => AppIcons.folderOpenRounded,
       'search_project_files' => AppIcons.searchRounded,
       'run_command' => AppIcons.terminalRounded,
+      'delegate_task' => AppIcons.hubOutlined,
       _ when isMcpTool => AppIcons.hubOutlined,
       _ => AppIcons.fileCodeOutlined,
     };
@@ -1740,10 +1742,34 @@ class _MessageStatus extends StatelessWidget {
 }
 
 class AgentsScreen extends StatefulWidget {
-  const AgentsScreen({super.key, required this.tasks, required this.onAddTask});
+  const AgentsScreen({
+    super.key,
+    required this.enabled,
+    required this.hasProvider,
+    required this.tasks,
+    required this.taskMessages,
+    required this.onAddTask,
+    required this.onOpenSettings,
+    required this.onStopTask,
+    required this.onApproveTool,
+    required this.onDenyTool,
+    required this.onApprovePlan,
+    required this.onKeepPlanning,
+    required this.onCancelPlan,
+  });
 
+  final bool enabled;
+  final bool hasProvider;
   final List<AgentTask> tasks;
+  final Map<String, List<ChatMessage>> taskMessages;
   final ValueChanged<String> onAddTask;
+  final VoidCallback onOpenSettings;
+  final ValueChanged<String> onStopTask;
+  final ValueChanged<String> onApproveTool;
+  final ValueChanged<String> onDenyTool;
+  final ValueChanged<String> onApprovePlan;
+  final ValueChanged<String> onKeepPlanning;
+  final ValueChanged<String> onCancelPlan;
 
   @override
   State<AgentsScreen> createState() => _AgentsScreenState();
@@ -1751,6 +1777,7 @@ class AgentsScreen extends StatefulWidget {
 
 class _AgentsScreenState extends State<AgentsScreen> {
   Future<void> _createTask() async {
+    if (!widget.enabled || !widget.hasProvider) return;
     final prompt = await showDialog<String>(
       context: context,
       builder: (context) => const _DelegateTaskDialog(),
@@ -1777,20 +1804,39 @@ class _AgentsScreenState extends State<AgentsScreen> {
               ),
               FilledButton.icon(
                 key: const Key('agents.create'),
-                onPressed: _createTask,
+                onPressed:
+                    widget.enabled && widget.hasProvider ? _createTask : null,
                 icon: const Icon(AppIcons.addRounded, size: 18),
                 label: const Text('Delegate task'),
               ),
             ],
           ),
           const SizedBox(height: 24),
-          if (widget.tasks.isEmpty)
+          if (!widget.enabled)
+            _EmptyPanel(
+              icon: AppIcons.hubOutlined,
+              title: 'Subagents are off',
+              description:
+                  'Enable Subagents in Settings to let a model delegate focused tasks.',
+              actionLabel: 'Open Settings',
+              onAction: widget.onOpenSettings,
+            )
+          else if (!widget.hasProvider)
+            _EmptyPanel(
+              icon: AppIcons.autoAwesomeOutlined,
+              title: 'Add a model provider',
+              description:
+                  'Subagents use the selected provider and model to run delegated tasks.',
+              actionLabel: 'Open Settings',
+              onAction: widget.onOpenSettings,
+            )
+          else if (widget.tasks.isEmpty)
             _EmptyPanel(
               icon: AppIcons.hubOutlined,
               title: 'No delegated tasks yet',
               description:
-                  'Task status, activity, and summaries will appear here.',
-              actionLabel: 'Prepare a task',
+                  'Task status, approval requests, and results will appear here.',
+              actionLabel: 'Delegate a task',
               onAction: _createTask,
             )
           else
@@ -1800,27 +1846,105 @@ class _AgentsScreenState extends State<AgentsScreen> {
                 separatorBuilder: (_, __) => const SizedBox(height: 10),
                 itemBuilder: (context, index) {
                   final task = widget.tasks[index];
+                  final messages =
+                      widget.taskMessages[task.id] ?? const <ChatMessage>[];
+                  final pendingActions = messages.where(
+                    (message) =>
+                        message.role == ChatMessageRole.tool &&
+                        message.toolActionStatus ==
+                            ToolActionStatus.awaitingApproval,
+                  );
+                  final statusLabel = switch (task.status) {
+                    AgentTaskStatus.queued => 'Queued',
+                    AgentTaskStatus.running => 'Running',
+                    AgentTaskStatus.completed => 'Completed',
+                    AgentTaskStatus.failed => 'Failed',
+                    AgentTaskStatus.stopped => 'Stopped',
+                  };
                   return Card(
-                    child: ListTile(
-                      leading: const CircleAvatar(
-                        backgroundColor: AppColors.ice,
-                        child: Icon(
-                          AppIcons.smartToyOutlined,
-                          color: AppColors.blueDeep,
-                        ),
-                      ),
-                      title: Text(
-                        task.prompt,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: const Padding(
-                        padding: EdgeInsets.only(top: 4),
-                        child: Text('Waiting for agent integration'),
-                      ),
-                      trailing: const Icon(
-                        AppIcons.hourglassEmptyRounded,
-                        color: AppColors.amber,
+                    key: Key('agents.task.${task.id}'),
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const CircleAvatar(
+                                radius: 18,
+                                backgroundColor: AppColors.ice,
+                                child: Icon(
+                                  AppIcons.smartToyOutlined,
+                                  color: AppColors.blueDeep,
+                                  size: 18,
+                                ),
+                              ),
+                              const SizedBox(width: 11),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      task.prompt,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleSmall,
+                                    ),
+                                    const SizedBox(height: 5),
+                                    Text(
+                                      statusLabel,
+                                      key: Key('agents.task.status.${task.id}'),
+                                      style: const TextStyle(
+                                        color: AppColors.muted,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (task.status == AgentTaskStatus.running) ...[
+                                const SizedBox.square(
+                                  dimension: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                TextButton(
+                                  key: Key('agents.stop.${task.id}'),
+                                  onPressed: () => widget.onStopTask(task.id),
+                                  child: const Text('Stop'),
+                                ),
+                              ],
+                            ],
+                          ),
+                          if (task.error != null || task.result.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            SelectableText(
+                              task.error ?? task.result,
+                              key: Key('agents.task.result.${task.id}'),
+                              style: TextStyle(
+                                color: task.error == null
+                                    ? AppColors.ink
+                                    : AppColors.red,
+                                fontSize: 12,
+                                height: 1.45,
+                              ),
+                            ),
+                          ],
+                          for (final message in pendingActions) ...[
+                            const SizedBox(height: 10),
+                            _ToolActionCard(
+                              message: message,
+                              onApprove: widget.onApproveTool,
+                              onDeny: widget.onDenyTool,
+                              onApprovePlan: widget.onApprovePlan,
+                              onKeepPlanning: widget.onKeepPlanning,
+                              onCancelPlan: widget.onCancelPlan,
+                            ),
+                          ],
+                        ],
                       ),
                     ),
                   );

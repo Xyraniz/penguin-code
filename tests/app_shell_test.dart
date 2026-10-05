@@ -13,6 +13,7 @@ import 'package:penguin_code/services/openai_compatible_chat_client.dart';
 import 'package:penguin_code/services/mcp_stdio_client.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 late AgentDataStore _testDataStore;
 
@@ -31,9 +32,19 @@ void main() {
   });
 
   tearDown(() async {
-    if (testDocumentsDirectory.existsSync()) {
-      await testDocumentsDirectory.delete(recursive: true);
-    }
+    await TestWidgetsFlutterBinding.ensureInitialized().runAsync(() async {
+      if (testDocumentsDirectory.existsSync()) {
+        for (var attempt = 0; attempt < 20; attempt++) {
+          try {
+            await testDocumentsDirectory.delete(recursive: true);
+            break;
+          } on FileSystemException {
+            if (attempt == 19) rethrow;
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+          }
+        }
+      }
+    });
   });
 
   testWidgets('shows the chat shell and toggles conversation history', (
@@ -1003,7 +1014,7 @@ void main() {
       'Use the selected model',
     );
     await tester.tap(find.byKey(const Key('composer.send')));
-    await tester.pumpAndSettle();
+    await _pumpUntilVisible(tester, find.text('Selected model reply'));
 
     final body =
         jsonDecode((sentRequest as http.Request).body) as Map<String, dynamic>;
@@ -1042,11 +1053,12 @@ void main() {
       'Read a file',
     );
     await tester.tap(find.byKey(const Key('composer.send')));
-    await tester.pumpAndSettle();
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 40)),
+    await _pumpUntilVisible(
+      tester,
+      find.text(
+        'The selected model or permission mode does not allow project tools.',
+      ),
     );
-    await tester.pumpAndSettle();
 
     expect(requestCount, 1);
     final renderedText = tester
@@ -1142,7 +1154,7 @@ void main() {
       find.byKey(const Key('chat.tool.deny.edit-denied')),
     );
 
-    expect(find.text('Edit a project file'), findsOneWidget);
+    expect(find.text('Edit a file'), findsOneWidget);
     expect(find.text('Before'), findsOneWidget);
     expect(find.text('After'), findsOneWidget);
     expect(
@@ -1153,7 +1165,8 @@ void main() {
     await tester.ensureVisible(denyEditButton);
     await tester.pump();
     await tester.tap(denyEditButton);
-    await tester.pumpAndSettle();
+    await _pumpUntilVisible(
+        tester, find.text('The denied edit was not applied.'));
     expect(
       await tester.runAsync(source.readAsString),
       'const greeting = "Hello";\n',
@@ -1228,7 +1241,7 @@ void main() {
       'Explain this value',
     );
     await tester.tap(find.byKey(const Key('composer.send')));
-    await tester.pumpAndSettle();
+    await _pumpUntilVisible(tester, find.text('Hello from the model.'));
 
     final messageList = find.byKey(const Key('chat.messages'));
     expect(
@@ -1251,6 +1264,13 @@ void main() {
         'Bearer session-test-key');
     final body =
         jsonDecode((sentRequest as http.Request).body) as Map<String, dynamic>;
+    expect(
+      (body['tools'] as List<dynamic>).where((tool) =>
+          ((tool as Map<String, dynamic>)['function']
+              as Map<String, dynamic>)['name'] ==
+          'delegate_task'),
+      isEmpty,
+    );
     final messages = body['messages'] as List<dynamic>;
     expect(messages.last, {'role': 'user', 'content': 'Explain this value'});
     expect(messages.first['role'], 'system');
@@ -1298,7 +1318,7 @@ void main() {
       'Explain this code',
     );
     await tester.tap(find.byKey(const Key('composer.send')));
-    await tester.pumpAndSettle();
+    await _pumpUntilVisible(tester, find.text('I see the selected file.'));
 
     final body =
         jsonDecode((sentRequest as http.Request).body) as Map<String, dynamic>;
@@ -1344,10 +1364,9 @@ void main() {
       'Write a long answer',
     );
     await tester.tap(find.byKey(const Key('composer.send')));
-    await tester.pump();
+    await _pumpUntilVisible(tester, find.byKey(const Key('composer.stop')));
     stream.add(utf8.encode(_sseChunk('Partial answer')));
-    await tester.pump();
-    expect(find.text('Partial answer'), findsOneWidget);
+    await _pumpUntilVisible(tester, find.text('Partial answer'));
 
     await tester.tap(find.byKey(const Key('composer.stop')));
     await tester.pumpAndSettle();
@@ -1385,7 +1404,7 @@ void main() {
       'Try this request again',
     );
     await tester.tap(find.byKey(const Key('composer.send')));
-    await tester.pumpAndSettle();
+    await _pumpUntilVisible(tester, find.textContaining('HTTP 401'));
     expect(find.textContaining('HTTP 401'), findsOneWidget);
     expect(
       find.descendant(
@@ -1396,7 +1415,7 @@ void main() {
     );
 
     await tester.tap(find.text('Retry'));
-    await tester.pumpAndSettle();
+    await _pumpUntilVisible(tester, find.text('Recovered'));
     expect(
       find.descendant(
         of: find.byKey(const Key('chat.messages')),
@@ -1414,32 +1433,356 @@ void main() {
     expect(requestCount, 2);
   });
 
-  testWidgets('queues a subagent task preview and opens changes', (
-    tester,
-  ) async {
+  testWidgets('keeps subagents off until enabled in Settings', (tester) async {
     await _setDesktopSize(tester);
     await tester.pumpWidget(_testApp());
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('topbar.agents')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('agents.create')));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byKey(const Key('agents.task.input')),
-      'Review the authentication module',
+    expect(find.text('Subagents are off'), findsOneWidget);
+    expect(find.byKey(const Key('agents.create')), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('agents.create')))
+          .onPressed,
+      isNull,
     );
-    await tester.tap(find.byKey(const Key('agents.task.create')));
+    await tester.tap(find.text('Open Settings'));
     await tester.pumpAndSettle();
-
-    expect(find.text('Review the authentication module'), findsOneWidget);
-    expect(find.text('Waiting for agent integration'), findsOneWidget);
+    expect(find.byKey(const Key('settings.subagents')), findsOneWidget);
+    expect(
+      tester.widget<Switch>(find.byKey(const Key('settings.subagents'))).value,
+      isFalse,
+    );
+    expect(
+      tester
+          .widget<DropdownButtonFormField<ResponseDetail>>(
+            find.byKey(const Key('settings.responseDetail')),
+          )
+          .initialValue,
+      ResponseDetail.modelDefault,
+    );
+    expect(
+      tester
+          .widget<DropdownButtonFormField<ReasoningSummary>>(
+            find.byKey(const Key('settings.reasoningSummary')),
+          )
+          .initialValue,
+      ReasoningSummary.automatic,
+    );
+    await tester
+        .ensureVisible(find.byKey(const Key('settings.responseDetail')));
+    await tester.tap(find.byKey(const Key('settings.responseDetail')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('High').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const Key('settings.reasoningSummary')),
+    );
+    await tester.tap(find.byKey(const Key('settings.reasoningSummary')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Detailed').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('settings.subagents')));
+    await tester.tap(find.byKey(const Key('settings.subagents')));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<Switch>(find.byKey(const Key('settings.subagents'))).value,
+      isTrue,
+    );
+    expect(
+      await tester.runAsync(
+        () =>
+            SharedPreferencesAsync().getBool('penguin_code.subagents_enabled'),
+      ),
+      isTrue,
+    );
+    await tester.tap(find.byKey(const Key('sidebar.new-chat')));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(_testApp());
+    await tester.pumpAndSettle();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 150)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<Switch>(find.byKey(const Key('settings.subagents'))).value,
+      isTrue,
+    );
+    expect(
+      tester
+          .widget<DropdownButtonFormField<ResponseDetail>>(
+            find.byKey(const Key('settings.responseDetail')),
+          )
+          .initialValue,
+      ResponseDetail.high,
+    );
+    expect(
+      tester
+          .widget<DropdownButtonFormField<ReasoningSummary>>(
+            find.byKey(const Key('settings.reasoningSummary')),
+          )
+          .initialValue,
+      ReasoningSummary.detailed,
+    );
+    await tester.tap(find.byKey(const Key('topbar.agents')));
+    await tester.pumpAndSettle();
+    expect(find.text('Add a model provider'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('topbar.changes')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('page.changes')), findsOneWidget);
     expect(
         find.text('Approved project edits will appear here.'), findsOneWidget);
+  });
+
+  testWidgets('delegates a focused task and returns its result to the parent', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requests.add(
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+        );
+        final response = switch (responseIndex++) {
+          0 => _sseToolCall(
+              name: 'delegate_task',
+              arguments: jsonEncode({
+                'task': 'Inspect the authentication flow and summarize risks.',
+              }),
+              id: 'delegate-auth-review',
+            ),
+          1 => _sseChunk('The flow has one missing token expiry check.'),
+          _ => _sseChunk('The review found one token expiry risk.'),
+        };
+        return _chatResponse('$response\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(
+      _testApp(
+        initialProjects: const [_testProject],
+        chatClient: client,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _configureProvider(tester);
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('General'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('settings.subagents')));
+    await tester.tap(find.byKey(const Key('settings.subagents')));
+    await tester.pumpAndSettle();
+    await _startProjectChat(tester);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Use a subagent to review authentication.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.text('The review found one token expiry risk.'),
+    );
+
+    expect(requests, hasLength(3));
+    final parentToolNames = (requests.first['tools'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map((tool) =>
+            (tool['function'] as Map<String, dynamic>)['name'] as String)
+        .toSet();
+    expect(parentToolNames, contains('delegate_task'));
+    final childMessages = requests[1]['messages'] as List<dynamic>;
+    expect(childMessages.last['role'], 'user');
+    expect(
+      childMessages.last['content'],
+      'Inspect the authentication flow and summarize risks.',
+    );
+    expect(
+      childMessages.any((message) =>
+          (message as Map<String, dynamic>)['content'] ==
+          'Use a subagent to review authentication.'),
+      isFalse,
+    );
+    final parentToolResult = (requests[2]['messages'] as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .lastWhere((message) => message['role'] == 'tool');
+    expect(
+      parentToolResult['content'],
+      contains('The flow has one missing token expiry check.'),
+    );
+
+    await tester.tap(find.byKey(const Key('topbar.agents')));
+    await tester.pumpAndSettle();
+    expect(find.text('Inspect the authentication flow and summarize risks.'),
+        findsOneWidget);
+    expect(find.text('Completed'), findsOneWidget);
+    expect(
+      find.textContaining('The flow has one missing token expiry check.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('subagent file actions use the selected approval mode', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final projectDirectory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('penguin-subagent-approval-'),
+    ))!;
+    addTearDown(
+      () => tester.runAsync(() => projectDirectory.delete(recursive: true)),
+    );
+    await tester.runAsync(
+      () => File('${projectDirectory.path}${Platform.pathSeparator}README.md')
+          .writeAsString('# Test project\n'),
+    );
+    final project = Project(
+      id: 'subagent-project',
+      name: 'Subagent project',
+      path: projectDirectory.path,
+    );
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requests.add(
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+        );
+        final response = switch (responseIndex++) {
+          0 => _sseToolCall(
+              name: 'delegate_task',
+              arguments:
+                  jsonEncode({'task': 'Read README.md and summarize it.'}),
+              id: 'delegate-readme',
+            ),
+          1 => _sseToolCall(
+              name: 'read_project_file',
+              arguments: '{"path":"README.md"}',
+              id: 'child-readme-read',
+            ),
+          2 => _sseChunk('The README identifies this as a test project.'),
+          _ => _sseChunk('The README review is complete.'),
+        };
+        return _chatResponse('$response\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(
+      _testApp(
+        initialProjects: [project],
+        chatClient: client,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _configureProvider(tester);
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('General'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('settings.subagents')));
+    await tester.tap(find.byKey(const Key('settings.subagents')));
+    await tester.pumpAndSettle();
+    await _startProjectChatFor(tester, project.id);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Delegate a read-only review of the project README.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('topbar.agents')));
+    await tester.pumpAndSettle();
+    await _pumpUntilVisible(
+        tester, find.text('Read README.md and summarize it.'));
+    final approvalButton = find.byWidgetPredicate((widget) {
+      final key = widget.key;
+      return key is ValueKey<String> &&
+          key.value.startsWith('chat.tool.approve.');
+    });
+    await _pumpUntilVisible(tester, approvalButton);
+    expect(find.text('Approval needed'), findsOneWidget);
+    await tester.ensureVisible(approvalButton);
+    await tester.tap(approvalButton);
+    await tester.tap(find.text('Chat').first);
+    await _pumpUntilVisible(
+        tester, find.text('The README review is complete.'));
+
+    expect(requests, hasLength(4));
+    final childReadResult = requests[2]['messages'] as List<dynamic>;
+    expect(childReadResult.last['role'], 'tool');
+    expect(childReadResult.last['content'], contains('# Test project'));
+    final parentToolResult = (requests[3]['messages'] as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .lastWhere((message) => message['role'] == 'tool');
+    expect(
+      parentToolResult['content'],
+      contains('The README identifies this as a test project.'),
+    );
+  });
+
+  testWidgets('adds output and reasoning preferences as provider guidance', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    late Map<String, dynamic> requestBody;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requestBody =
+            jsonDecode((request as http.Request).body) as Map<String, dynamic>;
+        return _chatResponse(
+            '${_sseChunk('Preference check complete.')}data: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(
+      _testApp(
+        initialProjects: const [_testProject],
+        chatClient: client,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _configureProvider(tester);
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('General'));
+    await tester.pumpAndSettle();
+    await tester
+        .ensureVisible(find.byKey(const Key('settings.responseDetail')));
+    await tester.tap(find.byKey(const Key('settings.responseDetail')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('High').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const Key('settings.reasoningSummary')),
+    );
+    await tester.tap(find.byKey(const Key('settings.reasoningSummary')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Detailed').last);
+    await tester.pumpAndSettle();
+
+    await _startProjectChat(tester);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Explain how the settings apply.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(tester, find.text('Preference check complete.'));
+
+    final messages = requestBody['messages'] as List<dynamic>;
+    final systemMessage = messages.first as Map<String, dynamic>;
+    final instructions = systemMessage['content'] as String;
+    expect(instructions, contains('Give a thorough response'));
+    expect(instructions, contains('detailed high-level summary'));
+    expect(instructions, contains('Never reveal hidden chain-of-thought'));
+    expect(requestBody.containsKey('verbosity'), isFalse);
+    expect(requestBody.containsKey('reasoning'), isFalse);
   });
 }
 
@@ -1507,11 +1850,13 @@ Future<void> _configureProvider(WidgetTester tester) async {
 
 Future<void> _startProjectChat(WidgetTester tester) async {
   await _createNewChat(tester);
-  await tester.tap(find.byKey(const Key('composer.project.select')));
-  await tester.pumpAndSettle();
-  await tester.tap(find.byKey(const Key('project.select.test-project')));
-  await tester.pumpAndSettle();
-  await _createNewChat(tester);
+  if (find.byKey(const Key('composer.project.select')).evaluate().isNotEmpty) {
+    await tester.tap(find.byKey(const Key('composer.project.select')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('project.select.test-project')));
+    await tester.pumpAndSettle();
+    await _createNewChat(tester);
+  }
   await _pumpUntilVisible(
     tester,
     find.byKey(const Key('project.access.menu')),
@@ -1523,11 +1868,13 @@ Future<void> _startProjectChatFor(
   String projectId,
 ) async {
   await _createNewChat(tester);
-  await tester.tap(find.byKey(const Key('composer.project.select')));
-  await tester.pumpAndSettle();
-  await tester.tap(find.byKey(Key('project.select.$projectId')));
-  await tester.pumpAndSettle();
-  await _createNewChat(tester);
+  if (find.byKey(const Key('composer.project.select')).evaluate().isNotEmpty) {
+    await tester.tap(find.byKey(const Key('composer.project.select')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('project.select.$projectId')));
+    await tester.pumpAndSettle();
+    await _createNewChat(tester);
+  }
   await _pumpUntilVisible(
     tester,
     find.byKey(const Key('project.access.menu')),

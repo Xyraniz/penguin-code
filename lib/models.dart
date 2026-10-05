@@ -2,6 +2,12 @@ enum AppPage { chat, agents, changes, skills, settings }
 
 enum SettingsTab { general, models, tools, mcp, memory, shortcuts }
 
+enum ResponseDetail { modelDefault, low, medium, high }
+
+enum ReasoningSummary { automatic, concise, detailed, none }
+
+enum AgentTaskStatus { queued, running, completed, failed, stopped }
+
 class McpServerProfile {
   const McpServerProfile({
     required this.id,
@@ -282,10 +288,37 @@ class ChatAttachment {
 }
 
 class AgentTask {
-  const AgentTask({required this.id, required this.prompt});
+  const AgentTask({
+    required this.id,
+    required this.prompt,
+    this.status = AgentTaskStatus.queued,
+    this.result = '',
+    this.error,
+    this.parentChatId,
+  });
 
   final String id;
   final String prompt;
+  final AgentTaskStatus status;
+  final String result;
+  final String? error;
+  final String? parentChatId;
+
+  AgentTask copyWith({
+    AgentTaskStatus? status,
+    String? result,
+    String? error,
+    String? parentChatId,
+    bool clearError = false,
+  }) =>
+      AgentTask(
+        id: id,
+        prompt: prompt,
+        status: status ?? this.status,
+        result: result ?? this.result,
+        error: clearError ? null : error ?? this.error,
+        parentChatId: parentChatId ?? this.parentChatId,
+      );
 }
 
 class AgentSkillProfile {

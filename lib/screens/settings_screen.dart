@@ -20,6 +20,12 @@ class SettingsScreen extends StatelessWidget {
     required this.onNotice,
     required this.workspacePath,
     required this.onSelectWorkspace,
+    required this.responseDetail,
+    required this.reasoningSummary,
+    required this.subagentsEnabled,
+    required this.onResponseDetailChanged,
+    required this.onReasoningSummaryChanged,
+    required this.onSubagentsEnabledChanged,
     required this.permissionMode,
     required this.onPermissionModeChanged,
     required this.memoryText,
@@ -52,6 +58,12 @@ class SettingsScreen extends StatelessWidget {
   final ValueChanged<String> onNotice;
   final String? workspacePath;
   final VoidCallback onSelectWorkspace;
+  final ResponseDetail responseDetail;
+  final ReasoningSummary reasoningSummary;
+  final bool subagentsEnabled;
+  final ValueChanged<ResponseDetail> onResponseDetailChanged;
+  final ValueChanged<ReasoningSummary> onReasoningSummaryChanged;
+  final ValueChanged<bool> onSubagentsEnabledChanged;
   final AgentPermissionMode permissionMode;
   final ValueChanged<AgentPermissionMode> onPermissionModeChanged;
   final String memoryText;
@@ -136,6 +148,12 @@ class SettingsScreen extends StatelessWidget {
           workspacePath: workspacePath,
           onSelectWorkspace: onSelectWorkspace,
           onNotice: onNotice,
+          responseDetail: responseDetail,
+          reasoningSummary: reasoningSummary,
+          subagentsEnabled: subagentsEnabled,
+          onResponseDetailChanged: onResponseDetailChanged,
+          onReasoningSummaryChanged: onReasoningSummaryChanged,
+          onSubagentsEnabledChanged: onSubagentsEnabledChanged,
         ),
       SettingsTab.models => _ModelSettings(
           providers: providers,
@@ -466,11 +484,23 @@ class _GeneralSettings extends StatelessWidget {
     required this.workspacePath,
     required this.onSelectWorkspace,
     required this.onNotice,
+    required this.responseDetail,
+    required this.reasoningSummary,
+    required this.subagentsEnabled,
+    required this.onResponseDetailChanged,
+    required this.onReasoningSummaryChanged,
+    required this.onSubagentsEnabledChanged,
   });
 
   final String? workspacePath;
   final VoidCallback onSelectWorkspace;
   final ValueChanged<String> onNotice;
+  final ResponseDetail responseDetail;
+  final ReasoningSummary reasoningSummary;
+  final bool subagentsEnabled;
+  final ValueChanged<ResponseDetail> onResponseDetailChanged;
+  final ValueChanged<ReasoningSummary> onReasoningSummaryChanged;
+  final ValueChanged<bool> onSubagentsEnabledChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -518,6 +548,99 @@ class _GeneralSettings extends StatelessWidget {
             icon: AppIcons.languageRounded,
             label: 'English',
             selected: true,
+          ),
+        ),
+        const SizedBox(height: 13),
+        _SettingsCard(
+          title: 'Output detail',
+          description:
+              'Choose how much detail to request in model responses. Provider behavior may vary.',
+          child: DropdownButtonFormField<ResponseDetail>(
+            key: const Key('settings.responseDetail'),
+            initialValue: responseDetail,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              isDense: true,
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 12,
+              ),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: ResponseDetail.modelDefault,
+                child: Text('Model default'),
+              ),
+              DropdownMenuItem(
+                value: ResponseDetail.low,
+                child: Text('Low'),
+              ),
+              DropdownMenuItem(
+                value: ResponseDetail.medium,
+                child: Text('Medium'),
+              ),
+              DropdownMenuItem(
+                value: ResponseDetail.high,
+                child: Text('High'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) onResponseDetailChanged(value);
+            },
+          ),
+        ),
+        const SizedBox(height: 13),
+        _SettingsCard(
+          title: 'Reasoning summary',
+          description:
+              'Choose whether the model adds a high-level summary. Hidden chain-of-thought is never requested.',
+          child: DropdownButtonFormField<ReasoningSummary>(
+            key: const Key('settings.reasoningSummary'),
+            initialValue: reasoningSummary,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              isDense: true,
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 12,
+              ),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: ReasoningSummary.automatic,
+                child: Text('Automatic'),
+              ),
+              DropdownMenuItem(
+                value: ReasoningSummary.concise,
+                child: Text('Concise'),
+              ),
+              DropdownMenuItem(
+                value: ReasoningSummary.detailed,
+                child: Text('Detailed'),
+              ),
+              DropdownMenuItem(
+                value: ReasoningSummary.none,
+                child: Text('None'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) onReasoningSummaryChanged(value);
+            },
+          ),
+        ),
+        const SizedBox(height: 13),
+        _SettingsCard(
+          title: 'Subagents',
+          description:
+              'Let the model delegate focused tasks that run with the current provider and computer access permissions.',
+          trailing: Switch.adaptive(
+            key: const Key('settings.subagents'),
+            value: subagentsEnabled,
+            onChanged: onSubagentsEnabledChanged,
+          ),
+          child: const Text(
+            'Off by default. Up to three delegated tasks can run at once.',
+            style: TextStyle(color: AppColors.muted, fontSize: 12),
           ),
         ),
       ],
