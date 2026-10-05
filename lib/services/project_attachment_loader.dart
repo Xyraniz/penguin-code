@@ -79,7 +79,7 @@ class ProjectAttachmentLoader {
   );
 
   Future<List<ChatAttachment>> readFiles({
-    required String projectPath,
+    String? projectPath,
     required List<String> selectedPaths,
     List<ChatAttachment> alreadyAttached = const [],
   }) async {
@@ -90,19 +90,23 @@ class ProjectAttachmentLoader {
       );
     }
 
-    final projectDirectory = Directory(projectPath);
-    if (!await projectDirectory.exists()) {
-      throw const ProjectAttachmentException(
-        'The selected project folder is no longer available.',
-      );
-    }
     final String root;
-    try {
-      root = await projectDirectory.resolveSymbolicLinks();
-    } on FileSystemException {
-      throw const ProjectAttachmentException(
-        'Could not access the selected project folder.',
-      );
+    if (projectPath == null || projectPath.isEmpty) {
+      root = '';
+    } else {
+      final projectDirectory = Directory(projectPath);
+      if (!await projectDirectory.exists()) {
+        throw const ProjectAttachmentException(
+          'The selected project folder is no longer available.',
+        );
+      }
+      try {
+        root = await projectDirectory.resolveSymbolicLinks();
+      } on FileSystemException {
+        throw const ProjectAttachmentException(
+          'Could not access the selected project folder.',
+        );
+      }
     }
     final existingPaths = alreadyAttached
         .map((attachment) => _normalize(attachment.relativePath))
@@ -117,7 +121,9 @@ class ProjectAttachmentLoader {
       _requireAbsolutePath(selectedPath);
       final file = File(selectedPath);
       final resolvedPath = await _resolveFilePath(file);
-      final relativePath = _relativePath(root, resolvedPath);
+      final relativePath = root.isEmpty
+          ? _standalonePath(resolvedPath)
+          : _relativePath(root, resolvedPath);
       final normalizedRelativePath = _normalize(relativePath);
       if (existingPaths.contains(normalizedRelativePath) ||
           loaded.any(
@@ -214,8 +220,22 @@ class ProjectAttachmentLoader {
     return segments.join('/');
   }
 
+  String _standalonePath(String resolvedPath) {
+    final normalized = resolvedPath.replaceAll(r'\', '/');
+    final segments = normalized.split('/');
+    if (segments.any(
+      (segment) => _blockedDirectories.contains(segment.toLowerCase()),
+    )) {
+      throw const ProjectAttachmentException(
+        'Files inside generated or version-control folders cannot be attached.',
+      );
+    }
+    return segments.join('/');
+  }
+
   void _validateFileType(String relativePath) {
-    final name = relativePath.split('/').last.toLowerCase();
+    final name =
+        relativePath.replaceAll(r'\', '/').split('/').last.toLowerCase();
     final dotIndex = name.lastIndexOf('.');
     final extension = dotIndex < 0 ? '' : name.substring(dotIndex + 1);
     final sensitiveName = name.startsWith('.env') ||

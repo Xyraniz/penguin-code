@@ -12,6 +12,9 @@ class ChatScreen extends StatefulWidget {
     required this.title,
     required this.chatId,
     required this.project,
+    required this.canUseComputer,
+    required this.workingDirectoryPath,
+    required this.outputDirectoryPath,
     required this.hasModel,
     required this.messages,
     required this.isGenerating,
@@ -19,14 +22,15 @@ class ChatScreen extends StatefulWidget {
     required this.permissionMode,
     required this.planMode,
     required this.canUsePlanMode,
+    required this.material3SkillInstalled,
+    required this.material3SkillActive,
+    required this.onMaterial3SkillChanged,
     required this.onPlanModeChanged,
     required this.onSend,
     required this.onPickAttachments,
     required this.onStop,
     required this.onRetry,
     required this.onChooseProject,
-    required this.onCreateProject,
-    required this.onNewChat,
     required this.onConfigureModels,
     required this.onOpenAgents,
     required this.onOpenChanges,
@@ -36,11 +40,15 @@ class ChatScreen extends StatefulWidget {
     required this.onApprovePlan,
     required this.onKeepPlanning,
     required this.onCancelPlan,
+    required this.onOpenDirectory,
   });
 
   final String? title;
   final String? chatId;
   final Project? project;
+  final bool canUseComputer;
+  final String? workingDirectoryPath;
+  final String? outputDirectoryPath;
   final bool hasModel;
   final List<ChatMessage> messages;
   final bool isGenerating;
@@ -48,6 +56,9 @@ class ChatScreen extends StatefulWidget {
   final AgentPermissionMode permissionMode;
   final bool planMode;
   final bool canUsePlanMode;
+  final bool material3SkillInstalled;
+  final bool material3SkillActive;
+  final ValueChanged<bool> onMaterial3SkillChanged;
   final ValueChanged<bool> onPlanModeChanged;
   final bool Function(String, List<ChatAttachment>) onSend;
   final Future<List<ChatAttachment>> Function(
@@ -56,8 +67,6 @@ class ChatScreen extends StatefulWidget {
   final VoidCallback onStop;
   final ValueChanged<String> onRetry;
   final VoidCallback onChooseProject;
-  final Future<Project?> Function() onCreateProject;
-  final VoidCallback onNewChat;
   final VoidCallback onConfigureModels;
   final VoidCallback onOpenAgents;
   final VoidCallback onOpenChanges;
@@ -67,6 +76,7 @@ class ChatScreen extends StatefulWidget {
   final ValueChanged<String> onApprovePlan;
   final void Function(String, String) onKeepPlanning;
   final ValueChanged<String> onCancelPlan;
+  final ValueChanged<String> onOpenDirectory;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -104,12 +114,12 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _pickAttachments() async {
-    if (widget.project == null || _isPickingAttachments) return;
+    if (_isPickingAttachments) return;
     if (_pendingAttachments.length >= ProjectAttachmentLoader.maxAttachments) {
       _showNotice(context, 'A message can include up to 4 files.');
       return;
     }
-    final projectId = widget.project!.id;
+    final projectId = widget.project?.id;
     final chatId = widget.chatId;
     setState(() => _isPickingAttachments = true);
     try {
@@ -186,8 +196,6 @@ class _ChatScreenState extends State<ChatScreen> {
                   permissionMode: widget.permissionMode,
                   onUseSuggestion: _useSuggestion,
                   onChooseProject: widget.onChooseProject,
-                  onCreateProject: widget.onCreateProject,
-                  onNewChat: widget.onNewChat,
                   onConfigureModels: widget.onConfigureModels,
                 )
               else if (widget.messages.isNotEmpty)
@@ -203,7 +211,7 @@ class _ChatScreenState extends State<ChatScreen> {
               else
                 _ConversationPlaceholder(
                   title: widget.title!,
-                  project: widget.project!,
+                  project: widget.project,
                   hasModel: widget.hasModel,
                   permissionMode: widget.permissionMode,
                   onOpenAgents: widget.onOpenAgents,
@@ -212,18 +220,32 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
         ),
+        if (widget.chatId != null &&
+            widget.workingDirectoryPath != null &&
+            widget.outputDirectoryPath != null)
+          _ChatDirectoriesBar(
+            workingDirectoryPath: widget.workingDirectoryPath!,
+            outputDirectoryPath: widget.outputDirectoryPath!,
+            onOpenDirectory: widget.onOpenDirectory,
+          ),
         _Composer(
           controller: _controller,
           focusNode: _focusNode,
           onSend: _send,
           onStop: widget.onStop,
-          enabled: widget.project != null,
+          enabled: true,
+          hasProject: widget.project != null,
+          canUseComputer: widget.canUseComputer,
+          onChooseProject: widget.onChooseProject,
           isGenerating: widget.isGenerating,
           providerLabel: widget.providerLabel,
           permissionMode: widget.permissionMode,
           onPermissionModeChanged: widget.onPermissionModeChanged,
           planMode: widget.planMode,
           canUsePlanMode: widget.canUsePlanMode,
+          material3SkillInstalled: widget.material3SkillInstalled,
+          material3SkillActive: widget.material3SkillActive,
+          onMaterial3SkillChanged: widget.onMaterial3SkillChanged,
           onPlanModeChanged: widget.onPlanModeChanged,
           attachments: _pendingAttachments,
           isPickingAttachments: _isPickingAttachments,
@@ -231,6 +253,65 @@ class _ChatScreenState extends State<ChatScreen> {
           onRemoveAttachment: _removeAttachment,
         ),
       ],
+    );
+  }
+}
+
+class _ChatDirectoriesBar extends StatelessWidget {
+  const _ChatDirectoriesBar({
+    required this.workingDirectoryPath,
+    required this.outputDirectoryPath,
+    required this.onOpenDirectory,
+  });
+
+  final String workingDirectoryPath;
+  final String outputDirectoryPath;
+  final ValueChanged<String> onOpenDirectory;
+
+  String _folderName(String path) =>
+      path.split(RegExp(r'[\\/]')).where((segment) => segment.isNotEmpty).last;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget folderButton(String label, String path, IconData icon) => Tooltip(
+          message: path,
+          child: TextButton.icon(
+            onPressed: () => onOpenDirectory(path),
+            icon: Icon(icon, size: 15),
+            label: Text(
+              '$label · ${_folderName(path)}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              textStyle: const TextStyle(fontSize: 11),
+            ),
+          ),
+        );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 3, 20, 1),
+      child: Align(
+        alignment: Alignment.center,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 880),
+          child: Row(
+            children: [
+              const Icon(AppIcons.folderOpenRounded,
+                  size: 14, color: AppColors.muted),
+              const SizedBox(width: 4),
+              folderButton('Workspace', workingDirectoryPath,
+                  AppIcons.folderOpenRounded),
+              const SizedBox(width: 4),
+              folderButton(
+                  'Outputs', outputDirectoryPath, AppIcons.fileCodeOutlined),
+              const Spacer(),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -289,8 +370,6 @@ class _EmptyChatWelcome extends StatelessWidget {
     required this.permissionMode,
     required this.onUseSuggestion,
     required this.onChooseProject,
-    required this.onCreateProject,
-    required this.onNewChat,
     required this.onConfigureModels,
   });
 
@@ -299,8 +378,6 @@ class _EmptyChatWelcome extends StatelessWidget {
   final AgentPermissionMode permissionMode;
   final ValueChanged<String> onUseSuggestion;
   final VoidCallback onChooseProject;
-  final Future<Project?> Function() onCreateProject;
-  final VoidCallback onNewChat;
   final VoidCallback onConfigureModels;
 
   @override
@@ -332,13 +409,13 @@ class _EmptyChatWelcome extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         const Icon(
-                          AppIcons.folderOpenRounded,
+                          AppIcons.chatBubbleOutlineRounded,
                           size: 15,
                           color: AppColors.blue,
                         ),
                         const SizedBox(width: 7),
                         Text(
-                          project?.name ?? 'No project selected',
+                          project?.name ?? 'General chat',
                           style: const TextStyle(
                             color: AppColors.blueDeep,
                             fontSize: 11,
@@ -351,14 +428,14 @@ class _EmptyChatWelcome extends StatelessWidget {
                   const SizedBox(height: 20),
                   Text(
                     project == null
-                        ? 'Choose a project to get started'
+                        ? 'What would you like to talk about?'
                         : 'What are we building today?',
                     style: Theme.of(context).textTheme.headlineLarge,
                   ),
                   const SizedBox(height: 10),
                   Text(
                     project == null
-                        ? 'Select a folder on this computer to use as the working directory for your chats.'
+                        ? 'Start with a regular chat. Choose a project whenever you want Penguin Code to work with files.'
                         : 'New chats will use ${project!.name} as their working directory.',
                     style: const TextStyle(
                       color: AppColors.ink,
@@ -370,7 +447,8 @@ class _EmptyChatWelcome extends StatelessWidget {
                   if (project == null)
                     Wrap(
                       spacing: 10,
-                      runSpacing: 10,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         FilledButton.icon(
                           key: const Key('home.project.choose'),
@@ -379,12 +457,20 @@ class _EmptyChatWelcome extends StatelessWidget {
                               const Icon(AppIcons.folderOpenRounded, size: 17),
                           label: const Text('Choose a project'),
                         ),
-                        OutlinedButton.icon(
-                          key: const Key('home.project.create'),
-                          onPressed: () async => onCreateProject(),
-                          icon: const Icon(AppIcons.folderPlus, size: 17),
-                          label: const Text('Create project'),
-                        ),
+                        if (!hasModel)
+                          TextButton.icon(
+                            key: const Key('chat.configure-models'),
+                            onPressed: onConfigureModels,
+                            icon: const Icon(AppIcons.addLinkRounded, size: 17),
+                            label: const Text('Set up a provider and model'),
+                            style: TextButton.styleFrom(
+                              foregroundColor: AppColors.blueDeep,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 3,
+                                vertical: 8,
+                              ),
+                            ),
+                          ),
                       ],
                     )
                   else ...[
@@ -421,12 +507,6 @@ class _EmptyChatWelcome extends StatelessWidget {
                       runSpacing: 8,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        FilledButton.icon(
-                          key: const Key('home.new-chat'),
-                          onPressed: onNewChat,
-                          icon: const Icon(AppIcons.addRounded, size: 17),
-                          label: const Text('Start a new chat'),
-                        ),
                         if (!hasModel)
                           TextButton.icon(
                             key: const Key('chat.configure-models'),
@@ -515,7 +595,7 @@ class _ConversationPlaceholder extends StatelessWidget {
   });
 
   final String title;
-  final Project project;
+  final Project? project;
   final bool hasModel;
   final AgentPermissionMode permissionMode;
   final VoidCallback onOpenAgents;
@@ -566,12 +646,13 @@ class _ConversationPlaceholder extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 9),
-            Text(
-              project.path,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: AppColors.muted, fontSize: 11),
-            ),
+            if (project != null)
+              Text(
+                project!.path,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: AppColors.muted, fontSize: 11),
+              ),
             const SizedBox(height: 16),
             Text(
               hasModel
@@ -618,12 +699,18 @@ class _Composer extends StatelessWidget {
     required this.onSend,
     required this.onStop,
     required this.enabled,
+    required this.hasProject,
+    required this.canUseComputer,
+    required this.onChooseProject,
     required this.isGenerating,
     required this.providerLabel,
     required this.permissionMode,
     required this.onPermissionModeChanged,
     required this.planMode,
     required this.canUsePlanMode,
+    required this.material3SkillInstalled,
+    required this.material3SkillActive,
+    required this.onMaterial3SkillChanged,
     required this.onPlanModeChanged,
     required this.attachments,
     required this.isPickingAttachments,
@@ -636,11 +723,17 @@ class _Composer extends StatelessWidget {
   final VoidCallback onSend;
   final VoidCallback onStop;
   final bool enabled;
+  final bool hasProject;
+  final bool canUseComputer;
+  final VoidCallback onChooseProject;
   final bool isGenerating;
   final String? providerLabel;
   final AgentPermissionMode permissionMode;
   final bool planMode;
   final bool canUsePlanMode;
+  final bool material3SkillInstalled;
+  final bool material3SkillActive;
+  final ValueChanged<bool> onMaterial3SkillChanged;
   final ValueChanged<bool> onPlanModeChanged;
   final ValueChanged<AgentPermissionMode> onPermissionModeChanged;
   final List<ChatAttachment> attachments;
@@ -679,7 +772,7 @@ class _Composer extends StatelessWidget {
                 ),
                 child: Column(
                   children: [
-                    if (attachments.isNotEmpty)
+                    if (attachments.isNotEmpty || material3SkillInstalled)
                       Padding(
                         padding: const EdgeInsets.fromLTRB(2, 2, 2, 6),
                         child: Wrap(
@@ -710,6 +803,48 @@ class _Composer extends StatelessWidget {
                                 visualDensity: VisualDensity.compact,
                                 backgroundColor: AppColors.ice,
                               ),
+                            if (material3SkillInstalled)
+                              Tooltip(
+                                message: material3SkillActive
+                                    ? 'Material Design 3 is active for this chat.'
+                                    : 'Add Material Design 3 guidance to this chat.',
+                                child: FilterChip(
+                                  key: const Key(
+                                      'composer.skill.material3.toggle'),
+                                  selected: material3SkillActive,
+                                  showCheckmark: false,
+                                  onSelected: isGenerating
+                                      ? null
+                                      : onMaterial3SkillChanged,
+                                  avatar: Icon(
+                                    AppIcons.component,
+                                    size: 15,
+                                    color: material3SkillActive
+                                        ? AppColors.blueDeep
+                                        : AppColors.muted,
+                                  ),
+                                  label: const Text('Material 3'),
+                                  visualDensity: VisualDensity.compact,
+                                  materialTapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 5),
+                                  side: BorderSide(
+                                    color: material3SkillActive
+                                        ? AppColors.blue
+                                        : AppColors.line,
+                                  ),
+                                  backgroundColor: Colors.white,
+                                  selectedColor: AppColors.ice,
+                                  labelStyle: TextStyle(
+                                    color: material3SkillActive
+                                        ? AppColors.blueDeep
+                                        : AppColors.muted,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
                       ),
@@ -722,10 +857,8 @@ class _Composer extends StatelessWidget {
                       maxLines: 5,
                       textCapitalization: TextCapitalization.sentences,
                       onSubmitted: (_) => onSend(),
-                      decoration: InputDecoration(
-                        hintText: enabled
-                            ? 'Message Penguin Code…'
-                            : 'Choose a project to start a chat…',
+                      decoration: const InputDecoration(
+                        hintText: 'Message Penguin Code…',
                         filled: false,
                         border: InputBorder.none,
                         enabledBorder: InputBorder.none,
@@ -740,7 +873,7 @@ class _Composer extends StatelessWidget {
                       children: [
                         IconButton(
                           key: const Key('composer.attach'),
-                          tooltip: 'Attach project files',
+                          tooltip: 'Attach files',
                           onPressed: enabled && !isPickingAttachments
                               ? onAddAttachments
                               : null,
@@ -759,84 +892,106 @@ class _Composer extends StatelessWidget {
                                 ),
                         ),
                         const SizedBox(width: 2),
-                        ProjectAccessMenu(
-                          value: permissionMode,
-                          onChanged: onPermissionModeChanged,
-                          compact: true,
-                          enabled: enabled && !isGenerating,
-                        ),
-                        const SizedBox(width: 5),
-                        Tooltip(
-                          message: canUsePlanMode || planMode
-                              ? 'Plan first and review the plan before making changes.'
-                              : 'Choose a tool-capable model and enable computer access to use Plan first.',
-                          child: FilterChip(
-                            key: const Key('composer.plan.toggle'),
-                            selected: planMode,
-                            showCheckmark: false,
-                            onSelected:
-                                !isGenerating && (canUsePlanMode || planMode)
-                                    ? onPlanModeChanged
-                                    : null,
-                            avatar: Icon(
-                              AppIcons.modelReasoning,
-                              size: 15,
-                              color: planMode
-                                  ? AppColors.blueDeep
-                                  : AppColors.muted,
-                            ),
-                            label: const Text('Plan first'),
+                        if (canUseComputer)
+                          ProjectAccessMenu(
+                            value: permissionMode,
+                            onChanged: onPermissionModeChanged,
+                            compact: true,
+                            enabled: enabled && !isGenerating,
+                          ),
+                        if (!hasProject)
+                          IconButton(
+                            key: const Key('composer.project.select'),
+                            tooltip: 'Choose a project for file tools',
                             visualDensity: VisualDensity.compact,
-                            materialTapTargetSize:
-                                MaterialTapTargetSize.shrinkWrap,
-                            padding: const EdgeInsets.symmetric(horizontal: 5),
-                            side: BorderSide(
-                              color: planMode ? AppColors.blue : AppColors.line,
-                            ),
-                            backgroundColor: Colors.white,
-                            selectedColor: AppColors.ice,
-                            labelStyle: TextStyle(
-                              color: planMode
-                                  ? AppColors.blueDeep
-                                  : AppColors.muted,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
+                            onPressed: onChooseProject,
+                            icon: const Icon(
+                              AppIcons.folderOpenRounded,
+                              size: 19,
+                              color: AppColors.blueDeep,
                             ),
                           ),
-                        ),
+                        const SizedBox(width: 5),
+                        if (canUseComputer)
+                          Tooltip(
+                            message: canUsePlanMode || planMode
+                                ? 'Plan first and review the plan before making changes.'
+                                : 'Choose a tool-capable model and enable computer access to use Plan first.',
+                            child: FilterChip(
+                              key: const Key('composer.plan.toggle'),
+                              selected: planMode,
+                              showCheckmark: false,
+                              onSelected:
+                                  !isGenerating && (canUsePlanMode || planMode)
+                                      ? onPlanModeChanged
+                                      : null,
+                              avatar: Icon(
+                                AppIcons.modelReasoning,
+                                size: 15,
+                                color: planMode
+                                    ? AppColors.blueDeep
+                                    : AppColors.muted,
+                              ),
+                              label: const Text('Plan first'),
+                              visualDensity: VisualDensity.compact,
+                              materialTapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 5),
+                              side: BorderSide(
+                                color:
+                                    planMode ? AppColors.blue : AppColors.line,
+                              ),
+                              backgroundColor: Colors.white,
+                              selectedColor: AppColors.ice,
+                              labelStyle: TextStyle(
+                                color: planMode
+                                    ? AppColors.blueDeep
+                                    : AppColors.muted,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
                         const SizedBox(width: 8),
-                        Flexible(
+                        Expanded(
                           child: Text(
                             planMode
                                 ? 'Plan first is on · read-only until approval.'
-                                : enabled && attachments.isNotEmpty
+                                : attachments.isNotEmpty && hasProject
                                     ? '${attachments.length} file${attachments.length == 1 ? '' : 's'} attached · ${_composerAccessLabel(permissionMode)}'
-                                    : enabled
-                                        ? _composerAccessLabel(permissionMode)
-                                        : 'Select a project folder to begin.',
+                                    : canUseComputer
+                                        ? hasProject
+                                            ? _composerAccessLabel(
+                                                permissionMode)
+                                            : 'Chat workspace · ${_composerAccessLabel(permissionMode)}'
+                                        : 'Chat only · computer access is unavailable.',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               color: planMode
                                   ? AppColors.blueDeep
-                                  : permissionMode ==
-                                          AgentPermissionMode.fullAccess
-                                      ? AppColors.amber
-                                      : AppColors.muted,
+                                  : !hasProject
+                                      ? AppColors.muted
+                                      : permissionMode ==
+                                              AgentPermissionMode.fullAccess
+                                          ? AppColors.amber
+                                          : AppColors.muted,
                               fontSize: 11,
                             ),
                           ),
                         ),
-                        const Spacer(),
                         if (!isGenerating)
-                          const Text(
-                            'Enter to send',
-                            style: TextStyle(
-                              color: AppColors.muted,
-                              fontSize: 10,
+                          const Padding(
+                            padding: EdgeInsets.only(right: 8),
+                            child: Text(
+                              'Enter to send',
+                              style: TextStyle(
+                                color: AppColors.muted,
+                                fontSize: 10,
+                              ),
                             ),
                           ),
-                        const SizedBox(width: 9),
                         Tooltip(
                           message:
                               isGenerating ? 'Stop generating' : 'Send message',

@@ -1,6 +1,6 @@
-enum AppPage { chat, agents, changes, settings }
+enum AppPage { chat, agents, changes, skills, settings }
 
-enum SettingsTab { general, models, tools, shortcuts }
+enum SettingsTab { general, models, tools, memory, shortcuts }
 
 enum ChatMessageRole { user, assistant, tool }
 
@@ -218,6 +218,24 @@ class AgentTask {
   final String prompt;
 }
 
+class AgentSkillProfile {
+  const AgentSkillProfile({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.triggerText,
+    required this.isBundled,
+    this.directoryPath,
+  });
+
+  final String id;
+  final String name;
+  final String description;
+  final String triggerText;
+  final bool isBundled;
+  final String? directoryPath;
+}
+
 class Project {
   const Project({required this.id, required this.name, required this.path});
 
@@ -232,18 +250,32 @@ class ChatConversation {
     required this.title,
     required this.projectId,
     this.planMode = false,
+    this.activeSkillIds = const [],
+    this.projectPath,
+    this.createdAt,
   });
 
   final String id;
   final String title;
-  final String projectId;
+  final String? projectId;
   final bool planMode;
+  final List<String> activeSkillIds;
+  final String? projectPath;
+  final DateTime? createdAt;
 
-  ChatConversation copyWith({String? title, bool? planMode}) =>
+  ChatConversation copyWith({
+    String? title,
+    bool? planMode,
+    List<String>? activeSkillIds,
+    String? projectPath,
+  }) =>
       ChatConversation(
         id: id,
         title: title ?? this.title,
         projectId: projectId,
         planMode: planMode ?? this.planMode,
+        activeSkillIds: activeSkillIds ?? this.activeSkillIds,
+        projectPath: projectPath ?? this.projectPath,
+        createdAt: createdAt,
       );
 }

@@ -21,6 +21,17 @@ class SettingsScreen extends StatelessWidget {
     required this.onSelectWorkspace,
     required this.permissionMode,
     required this.onPermissionModeChanged,
+    required this.memoryText,
+    required this.memoriesEnabled,
+    required this.autoRememberPreferences,
+    required this.autoSelectSkills,
+    required this.dataDirectoryPath,
+    required this.isLocalDataReady,
+    required this.onSaveMemories,
+    required this.onMemoriesEnabledChanged,
+    required this.onAutoRememberChanged,
+    required this.onAutoSelectSkillsChanged,
+    required this.skillsDirectoryPath,
   });
 
   final SettingsTab selectedTab;
@@ -36,11 +47,23 @@ class SettingsScreen extends StatelessWidget {
   final VoidCallback onSelectWorkspace;
   final AgentPermissionMode permissionMode;
   final ValueChanged<AgentPermissionMode> onPermissionModeChanged;
+  final String memoryText;
+  final bool memoriesEnabled;
+  final bool autoRememberPreferences;
+  final bool autoSelectSkills;
+  final String? dataDirectoryPath;
+  final bool isLocalDataReady;
+  final Future<void> Function(String) onSaveMemories;
+  final ValueChanged<bool> onMemoriesEnabledChanged;
+  final ValueChanged<bool> onAutoRememberChanged;
+  final ValueChanged<bool> onAutoSelectSkillsChanged;
+  final String? skillsDirectoryPath;
 
   String get _title => switch (selectedTab) {
         SettingsTab.general => 'General',
         SettingsTab.models => 'Providers and models',
         SettingsTab.tools => 'Tools and permissions',
+        SettingsTab.memory => 'Memories',
         SettingsTab.shortcuts => 'Keyboard shortcuts',
       };
 
@@ -48,6 +71,7 @@ class SettingsScreen extends StatelessWidget {
         SettingsTab.general => 'Application preferences and active project.',
         SettingsTab.models => 'Connection profiles and available models.',
         SettingsTab.tools => 'Choose which actions require your approval.',
+        SettingsTab.memory => 'Personal context and skill matching.',
         SettingsTab.shortcuts => 'Quick actions for working from the keyboard.',
       };
 
@@ -110,6 +134,19 @@ class SettingsScreen extends StatelessWidget {
           permissionMode: permissionMode,
           onPermissionModeChanged: onPermissionModeChanged,
         ),
+      SettingsTab.memory => _MemorySettings(
+          memoryText: memoryText,
+          memoriesEnabled: memoriesEnabled,
+          autoRememberPreferences: autoRememberPreferences,
+          autoSelectSkills: autoSelectSkills,
+          dataDirectoryPath: dataDirectoryPath,
+          isLocalDataReady: isLocalDataReady,
+          skillsDirectoryPath: skillsDirectoryPath,
+          onSave: onSaveMemories,
+          onMemoriesEnabledChanged: onMemoriesEnabledChanged,
+          onAutoRememberChanged: onAutoRememberChanged,
+          onAutoSelectSkillsChanged: onAutoSelectSkillsChanged,
+        ),
       SettingsTab.shortcuts => const _ShortcutSettings(),
     };
   }
@@ -148,6 +185,11 @@ class SettingsScreen extends StatelessWidget {
                     SettingsTab.tools,
                     AppIcons.securityOutlined,
                     'Tools and permissions',
+                  ),
+                  _tabButton(
+                    SettingsTab.memory,
+                    AppIcons.modelReasoning,
+                    'Memories',
                   ),
                   _tabButton(
                     SettingsTab.shortcuts,
@@ -211,6 +253,184 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+class _MemorySettings extends StatefulWidget {
+  const _MemorySettings({
+    required this.memoryText,
+    required this.memoriesEnabled,
+    required this.autoRememberPreferences,
+    required this.autoSelectSkills,
+    required this.dataDirectoryPath,
+    required this.isLocalDataReady,
+    required this.skillsDirectoryPath,
+    required this.onSave,
+    required this.onMemoriesEnabledChanged,
+    required this.onAutoRememberChanged,
+    required this.onAutoSelectSkillsChanged,
+  });
+
+  final String memoryText;
+  final bool memoriesEnabled;
+  final bool autoRememberPreferences;
+  final bool autoSelectSkills;
+  final String? dataDirectoryPath;
+  final bool isLocalDataReady;
+  final String? skillsDirectoryPath;
+  final Future<void> Function(String) onSave;
+  final ValueChanged<bool> onMemoriesEnabledChanged;
+  final ValueChanged<bool> onAutoRememberChanged;
+  final ValueChanged<bool> onAutoSelectSkillsChanged;
+
+  @override
+  State<_MemorySettings> createState() => _MemorySettingsState();
+}
+
+class _MemorySettingsState extends State<_MemorySettings> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.memoryText);
+  bool _saving = false;
+
+  @override
+  void didUpdateWidget(covariant _MemorySettings oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.memoryText != widget.memoryText &&
+        _controller.text == oldWidget.memoryText) {
+      _controller.text = widget.memoryText;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await widget.onSave(_controller.text);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SettingsCard(
+          title: 'Personal memory',
+          description:
+              'Keep lasting preferences in an editable local Markdown file.',
+          trailing: Switch.adaptive(
+            value: widget.memoriesEnabled,
+            onChanged: widget.isLocalDataReady
+                ? widget.onMemoriesEnabledChanged
+                : null,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                key: const Key('settings.memories.editor'),
+                controller: _controller,
+                minLines: 8,
+                maxLines: 14,
+                maxLength: AgentMemoryLimits.maxCharacters,
+                enabled: widget.isLocalDataReady,
+                decoration: const InputDecoration(
+                  hintText:
+                      '# Penguin Code memories\n\n## User preferences\n- Add notes you want the agent to remember.',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton.icon(
+                  key: const Key('settings.memories.save'),
+                  onPressed: widget.isLocalDataReady && !_saving ? _save : null,
+                  icon: _saving
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(AppIcons.checkRounded, size: 17),
+                  label: Text(_saving ? 'Saving' : 'Save memories'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 13),
+        _SettingsCard(
+          title: 'Automatic learning',
+          description:
+              'Learn from clear preference statements in your messages. The app does not send a separate memory request to the model.',
+          child: Column(
+            children: [
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Remember explicit preferences'),
+                subtitle: const Text(
+                  'Only direct preferences are saved; likely credentials are skipped.',
+                ),
+                value: widget.autoRememberPreferences,
+                onChanged: widget.memoriesEnabled
+                    ? widget.onAutoRememberChanged
+                    : null,
+              ),
+              const Divider(height: 1),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Automatically select matching skills'),
+                subtitle: const Text(
+                  'Match installed skills to each request and your saved preferences.',
+                ),
+                value: widget.autoSelectSkills,
+                onChanged: widget.isLocalDataReady
+                    ? widget.onAutoSelectSkillsChanged
+                    : null,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 13),
+        _SettingsCard(
+          title: 'Local agent files',
+          description: widget.isLocalDataReady
+              ? 'Chats, workspaces, outputs, skills, and Memories.md stay on this computer.'
+              : 'Preparing the local agent folders…',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(
+                widget.dataDirectoryPath ?? 'Waiting for the data folder',
+                style: theme.textTheme.bodySmall,
+              ),
+              if (widget.skillsDirectoryPath != null) ...[
+                const SizedBox(height: 7),
+                Text(
+                  'Local skills: ${widget.skillsDirectoryPath}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: AppColors.muted,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+abstract final class AgentMemoryLimits {
+  static const maxCharacters = 4096;
 }
 
 class _GeneralSettings extends StatelessWidget {

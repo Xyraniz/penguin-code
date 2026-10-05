@@ -2,6 +2,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 abstract final class AppIcons {
   static const acUnitRounded = LucideIcons.snowflake;
+  static const accessibility = LucideIcons.accessibility;
   static const addLinkRounded = LucideIcons.link;
   static const addRounded = LucideIcons.plus;
   static const arrowUpwardRounded = LucideIcons.arrowUp;
@@ -12,6 +13,7 @@ abstract final class AppIcons {
   static const checkRounded = LucideIcons.check;
   static const cloudOutlined = LucideIcons.cloud;
   static const closeRounded = LucideIcons.x;
+  static const component = LucideIcons.component;
   static const deleteOutlineRounded = LucideIcons.trash2;
   static const devicesOutlined = LucideIcons.monitorSmartphone;
   static const differenceOutlined = LucideIcons.fileDiff;
@@ -36,6 +38,7 @@ abstract final class AppIcons {
   static const modelReasoning = LucideIcons.brain;
   static const modelTools = LucideIcons.wrench;
   static const personOutlineRounded = LucideIcons.userRound;
+  static const palette = LucideIcons.palette;
   static const rateReviewOutlined = LucideIcons.squarePen;
   static const removeRedEyeOutlined = LucideIcons.eye;
   static const searchRounded = LucideIcons.search;

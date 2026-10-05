@@ -70,13 +70,19 @@ class ProjectAccessMenu extends StatelessWidget {
           context: context,
           builder: (context) => AlertDialog(
             key: const Key('project.access.confirm.dialog'),
+            constraints: const BoxConstraints(maxWidth: 460),
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 24,
+              vertical: 24,
+            ),
             icon: const Icon(
               AppIcons.securityOutlined,
               color: AppColors.amber,
             ),
             title: const Text('Enable full access?'),
             content: const Text(
-              'The connected model can read and edit files anywhere and run commands without asking first. Commands can overwrite or delete data. File contents and command output are sent to your selected provider. Only enable this for a model you trust.',
+              'The connected model can read and edit files anywhere on your computer and run commands without confirmation. It could overwrite or delete data. File contents and command output are sent to your selected provider. Only enable this for a model you trust.',
+              style: TextStyle(height: 1.45),
             ),
             actions: [
               TextButton(
