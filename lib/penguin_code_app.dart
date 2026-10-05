@@ -182,7 +182,6 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   static const _maxSubagentPromptCharacters = 4096;
   static const _maxSubagentResultCharacters = 12000;
   static const _maxSubagentFollowUpCharacters = 4096;
-  static const _maxSubagentHistoryMessages = 80;
 
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _sidebarOpen = true;
@@ -1542,6 +1541,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
               permissionMode != AgentPermissionMode.chatOnly && !isPlanMode,
           planMode: isPlanMode,
           reasoningEffort: reasoningEffort,
+          contextSummary: conversation.contextSummary,
+          contextSummaryThroughMessageId:
+              conversation.contextSummaryThroughMessageId,
           skillInstructions: [
             ...contextInstructionParts,
             ...projectInstructionSections,
@@ -1558,6 +1560,40 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         )) {
           if (!mounted) return;
           switch (event) {
+            case ChatContextCompactedEvent(
+                :final summary,
+                :final throughMessageId,
+              ):
+              ChatConversation currentConversation = conversation;
+              if (isSubagent) {
+                currentConversation =
+                    _subagentConversations[chatId] ?? conversation;
+              } else {
+                for (final chat in _chats) {
+                  if (chat.id == chatId) {
+                    currentConversation = chat;
+                    break;
+                  }
+                }
+              }
+              conversation = currentConversation.copyWith(
+                contextSummary: summary,
+                contextSummaryThroughMessageId: throughMessageId,
+              );
+              if (isSubagent) {
+                _subagentConversations[chatId] = conversation;
+              } else {
+                final chatIndex = _chats.indexWhere(
+                  (chat) => chat.id == chatId,
+                );
+                if (chatIndex >= 0) _chats[chatIndex] = conversation;
+              }
+              await _persistChat(chatId);
+              if (!isSubagent) {
+                _showNotice(
+                  'Earlier chat context was summarized automatically so work can continue.',
+                );
+              }
             case ChatTextEvent(:final text):
               _updateChatMessage(
                 chatId,
@@ -2748,28 +2784,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   }
 
   List<ChatMessage> _subagentHistoryForProvider(List<ChatMessage> messages) {
-    final providerHistory = messages.where(_isProviderHistoryMessage).toList();
-    if (providerHistory.length <= _maxSubagentHistoryMessages) {
-      return providerHistory;
-    }
-    final firstUserIndex = providerHistory.indexWhere(
-      (message) => message.role == ChatMessageRole.user,
-    );
-    final firstUser =
-        firstUserIndex < 0 ? null : providerHistory[firstUserIndex];
-    var recent = providerHistory
-        .skip(providerHistory.length - (_maxSubagentHistoryMessages - 1))
-        .toList();
-    while (recent.isNotEmpty &&
-        (recent.first.role == ChatMessageRole.tool ||
-            recent.first.toolCalls.isNotEmpty)) {
-      recent.removeAt(0);
-    }
-    return [
-      if (firstUser != null && !recent.any((item) => item.id == firstUser.id))
-        firstUser,
-      ...recent,
-    ];
+    return messages.where(_isProviderHistoryMessage).toList(growable: false);
   }
 
   Future<String> _finishSubagentTurn(

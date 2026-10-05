@@ -33,6 +33,7 @@ class AgentDataStore {
         _fallbackDirectory = fallbackDirectory;
 
   static const maxMemoryBytes = 16 * 1024;
+  static const maxContextSummaryChars = 24000;
   static const maxRememberedPreferences = 80;
   static const _memoryFileName = 'Memories.md';
 
@@ -346,6 +347,9 @@ class AgentDataStore {
         'planMode': conversation.planMode,
         'activeSkillIds': conversation.activeSkillIds,
         'createdAt': _createdAt(conversation).toIso8601String(),
+        'contextSummary': conversation.contextSummary,
+        'contextSummaryThroughMessageId':
+            conversation.contextSummaryThroughMessageId,
       };
 
   ChatConversation _conversationFromJson(Map<String, dynamic> json) {
@@ -368,6 +372,23 @@ class AgentDataStore {
           .toList(growable: false),
       createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ??
           _dateFromId(id),
+      contextSummary: (json['contextSummary'] is String
+              ? json['contextSummary'] as String
+              : '')
+          .substring(
+        0,
+        ((json['contextSummary'] is String
+                    ? json['contextSummary'] as String
+                    : '')
+                .length)
+            .clamp(0, maxContextSummaryChars)
+            .toInt(),
+      ),
+      contextSummaryThroughMessageId: json['contextSummaryThroughMessageId']
+                  is String &&
+              (json['contextSummaryThroughMessageId'] as String).length <= 160
+          ? json['contextSummaryThroughMessageId'] as String
+          : null,
     );
   }
 

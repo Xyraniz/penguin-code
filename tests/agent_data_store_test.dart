@@ -20,6 +20,8 @@ void main() {
       projectPath: r'C:\work\project',
       activeSkillIds: const ['material-3'],
       createdAt: createdAt,
+      contextSummary: 'The user approved a focused security review.',
+      contextSummaryThroughMessageId: 'assistant-1',
     );
     final task = AgentTask(
       id: conversation.id,
@@ -61,6 +63,10 @@ void main() {
     expect(saved.single.agentTask?.permissionMode,
         AgentPermissionMode.askBeforeEachAction);
     expect(saved.single.agentTask?.reasoningEffortId, 'high');
+    expect(saved.single.conversation.contextSummary,
+        'The user approved a focused security review.');
+    expect(saved.single.conversation.contextSummaryThroughMessageId,
+        'assistant-1');
     expect(saved.single.messages.map((message) => message.content), [
       'Review project security',
       'I found an expired token check.',

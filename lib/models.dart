@@ -478,6 +478,8 @@ class ChatConversation {
     this.activeSkillIds = const [],
     this.projectPath,
     this.createdAt,
+    this.contextSummary = '',
+    this.contextSummaryThroughMessageId,
   });
 
   final String id;
@@ -487,12 +489,17 @@ class ChatConversation {
   final List<String> activeSkillIds;
   final String? projectPath;
   final DateTime? createdAt;
+  final String contextSummary;
+  final String? contextSummaryThroughMessageId;
 
   ChatConversation copyWith({
     String? title,
     bool? planMode,
     List<String>? activeSkillIds,
     String? projectPath,
+    String? contextSummary,
+    String? contextSummaryThroughMessageId,
+    bool clearContextSummary = false,
   }) =>
       ChatConversation(
         id: id,
@@ -502,5 +509,11 @@ class ChatConversation {
         activeSkillIds: activeSkillIds ?? this.activeSkillIds,
         projectPath: projectPath ?? this.projectPath,
         createdAt: createdAt,
+        contextSummary:
+            clearContextSummary ? '' : contextSummary ?? this.contextSummary,
+        contextSummaryThroughMessageId: clearContextSummary
+            ? null
+            : contextSummaryThroughMessageId ??
+                this.contextSummaryThroughMessageId,
       );
 }

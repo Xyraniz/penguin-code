@@ -20,6 +20,7 @@ Penguin Code is an early native desktop prototype with a working text chat for O
 - Provider-reported context and capability metadata in the model picker
 - Model-specific reasoning effort selection with provider wire-value mapping
 - Streaming chat composer with stop and retry controls
+- Automatic conversation-context compaction for long tasks, with the complete transcript preserved locally
 - Source and text file attachments from any folder
 - Computer access selector with chat-only, per-action approval, automatic read, and full access modes
 - OpenAI-compatible tool calling for listing, searching, reading, and editing files across computer folders
@@ -38,6 +39,8 @@ Penguin Code is an early native desktop prototype with a working text chat for O
 - Change review, tool permission, appearance, and shortcut screens
 
 Conversations and messages are saved as readable local JSON, while provider profiles and API keys stay in memory for the current session. The first launch creates `Documents/Penguin-code` with `Memories.md`, `Chats`, and `Skills`. Each conversation is stored under `Chats/YYYY-MM-DD/<chat-id>/chat.json`; chats without a project also get a `workspace` folder, and every chat gets an `outputs` folder. Deleting a conversation removes its saved history but keeps its workspace and outputs. Selecting a project keeps that project as the chat's working directory. If `Documents/Penguin-code` is already a Penguin Code source checkout, app data uses the operating system's application-data directory to avoid mixing source files and user data.
+
+Penguin Code automatically summarizes earlier context when the selected model's reported context window or the request-size safety limit approaches its threshold. This also works during a long coding task: completed tool rounds can be compacted while the latest round stays intact. Penguin Code keeps the full transcript in the chat, stores the latest summary with that conversation, and sends the summary together with recent context and the active user request on later calls. It never cuts through a streamed response or separates a tool call from its result. If a provider explicitly reports context overflow, Penguin Code attempts one automatic compaction and retry. Summary requests use the selected provider and model and may use additional tokens. If the current message and attachments alone are too large, Penguin Code asks you to shorten them instead of silently dropping earlier context.
 
 Open **Settings → Memories** to edit `Memories.md`, disable memory context, and control automatic preference capture and skill matching. Automatic capture only saves messages that look like explicit preferences, and skips common credential patterns. Saved memories are added to provider context only while memory is enabled. Conversation text, attachments, memories, and selected skill guidance are sent to the configured provider when used in a request.
 

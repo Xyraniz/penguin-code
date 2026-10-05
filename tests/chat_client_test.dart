@@ -565,31 +565,66 @@ void main() {
       expect(messages.single['content'], isNot(contains('C:\\Users\\')));
     });
 
-    test('keeps request context within the limit using recent user turns',
+    test('automatically summarizes older turns before the request limit',
         () async {
-      late http.BaseRequest sentRequest;
+      final sentBodies = <Map<String, dynamic>>[];
       final client = OpenAiCompatibleChatClient(
         client: _FakeClient((request) async {
-          sentRequest = request;
+          final body = jsonDecode((request as http.Request).body)
+              as Map<String, dynamic>;
+          sentBodies.add(body);
+          if (sentBodies.length == 1) {
+            return _response(
+              '${_event({
+                    'choices': [
+                      {
+                        'delta': {
+                          'content':
+                              'The earlier task is to update files safely.'
+                        }
+                      }
+                    ]
+                  })}data: [DONE]\n\n',
+            );
+          }
           return _response(
-              'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n');
+            '${_event({
+                  'choices': [
+                    {
+                      'delta': {'content': 'ok'}
+                    }
+                  ]
+                })}data: [DONE]\n\n',
+          );
         }),
       );
 
-      await client
-          .streamCompletion(
+      final events = await client
+          .streamEvents(
             provider: _provider(),
             history: [
               ChatMessage(
-                id: 'old-user',
+                id: 'user-1',
                 role: ChatMessageRole.user,
-                content: 'x' * OpenAiCompatibleChatClient.maxRequestBodyBytes,
+                content: 'x' * (110 * 1024),
                 status: ChatMessageStatus.complete,
               ),
-              const ChatMessage(
-                id: 'old-assistant',
+              ChatMessage(
+                id: 'assistant-1',
                 role: ChatMessageRole.assistant,
-                content: 'Older answer',
+                content: 'a' * (45 * 1024),
+                status: ChatMessageStatus.complete,
+              ),
+              ChatMessage(
+                id: 'user-2',
+                role: ChatMessageRole.user,
+                content: 'y' * (110 * 1024),
+                status: ChatMessageStatus.complete,
+              ),
+              ChatMessage(
+                id: 'assistant-2',
+                role: ChatMessageRole.assistant,
+                content: 'b' * (15 * 1024),
                 status: ChatMessageStatus.complete,
               ),
               const ChatMessage(
@@ -609,13 +644,363 @@ void main() {
           )
           .toList();
 
-      final body = jsonDecode((sentRequest as http.Request).body)
-          as Map<String, dynamic>;
-      expect(body['messages'], [
-        {'role': 'user', 'content': 'Current question'},
-      ]);
-      expect(utf8.encode((sentRequest as http.Request).body).length,
+      final compaction = events.whereType<ChatContextCompactedEvent>().single;
+      expect(compaction.throughMessageId, 'assistant-1');
+      expect(compaction.summary, 'The earlier task is to update files safely.');
+      expect(sentBodies, hasLength(2));
+      final requestBody = jsonEncode(sentBodies.last);
+      expect(
+          requestBody, contains('The earlier task is to update files safely.'));
+      expect(requestBody, isNot(contains('x' * 256)));
+      expect(requestBody, contains('y' * 256));
+      expect(requestBody, contains('Current question'));
+      expect(utf8.encode(requestBody).length,
           lessThanOrEqualTo(OpenAiCompatibleChatClient.maxRequestBodyBytes));
+    });
+
+    test('uses discovered model context-window metadata for early compaction',
+        () async {
+      final sentBodies = <Map<String, dynamic>>[];
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          final body = jsonDecode((request as http.Request).body)
+              as Map<String, dynamic>;
+          sentBodies.add(body);
+          final content =
+              sentBodies.length == 1 ? 'Earlier work summary.' : 'ok';
+          return _response(
+            '${_event({
+                  'choices': [
+                    {
+                      'delta': {'content': content}
+                    }
+                  ]
+                })}data: [DONE]\n\n',
+          );
+        }),
+      );
+
+      final events = await client
+          .streamEvents(
+            provider: _provider(contextWindow: 6000),
+            history: [
+              ChatMessage(
+                id: 'user-1',
+                role: ChatMessageRole.user,
+                content: 'older-work-' * 400,
+                status: ChatMessageStatus.complete,
+              ),
+              ChatMessage(
+                id: 'assistant-1',
+                role: ChatMessageRole.assistant,
+                content: 'important-decision-' * 100,
+                status: ChatMessageStatus.complete,
+              ),
+              ChatMessage(
+                id: 'user-2',
+                role: ChatMessageRole.user,
+                content: 'continue-context-' * 400,
+                status: ChatMessageStatus.complete,
+              ),
+            ],
+            abortTrigger: Completer<void>().future,
+          )
+          .toList();
+
+      expect(events.whereType<ChatContextCompactedEvent>(), hasLength(1));
+      expect(sentBodies, hasLength(2));
+      expect(jsonEncode(sentBodies.last), contains('Earlier work summary.'));
+      expect(jsonEncode(sentBodies.last), isNot(contains('older-work-')));
+      expect(jsonEncode(sentBodies.last), contains('continue-context-'));
+    });
+
+    test('keeps tool calls paired with their results when compacting history',
+        () async {
+      final sentBodies = <Map<String, dynamic>>[];
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          final body = jsonDecode((request as http.Request).body)
+              as Map<String, dynamic>;
+          sentBodies.add(body);
+          final isSummary = (body['messages'] as List)
+              .whereType<Map<dynamic, dynamic>>()
+              .where((message) => message['role'] == 'system')
+              .any((message) => message['content']
+                  .toString()
+                  .contains('Create a concise factual handoff summary'));
+          final content =
+              isSummary ? 'The tool found the required file.' : 'Done';
+          return _response(
+            '${_event({
+                  'choices': [
+                    {
+                      'delta': {'content': content}
+                    }
+                  ]
+                })}data: [DONE]\n\n',
+          );
+        }),
+      );
+
+      final events = await client
+          .streamEvents(
+            provider: _provider(),
+            history: [
+              ChatMessage(
+                id: 'user-old',
+                role: ChatMessageRole.user,
+                content: 'x' * (270 * 1024),
+                status: ChatMessageStatus.complete,
+              ),
+              const ChatMessage(
+                id: 'assistant-tool-call',
+                role: ChatMessageRole.assistant,
+                content: '',
+                status: ChatMessageStatus.complete,
+                toolCalls: [
+                  AgentToolCall(
+                    id: 'call-1',
+                    name: 'read_project_file',
+                    arguments: {'path': 'lib/main.dart'},
+                    rawArguments: '{"path":"lib/main.dart"}',
+                    hasValidArguments: true,
+                  ),
+                ],
+              ),
+              const ChatMessage(
+                id: 'tool-result',
+                role: ChatMessageRole.tool,
+                content: 'main() starts the app.',
+                status: ChatMessageStatus.complete,
+                toolCallId: 'call-1',
+                toolName: 'read_project_file',
+              ),
+              const ChatMessage(
+                id: 'assistant-final',
+                role: ChatMessageRole.assistant,
+                content: 'The file starts the app.',
+                status: ChatMessageStatus.complete,
+              ),
+              const ChatMessage(
+                id: 'user-current',
+                role: ChatMessageRole.user,
+                content: 'Continue from there.',
+                status: ChatMessageStatus.complete,
+              ),
+            ],
+            abortTrigger: Completer<void>().future,
+          )
+          .toList();
+
+      expect(
+          events.whereType<ChatContextCompactedEvent>().single.throughMessageId,
+          'assistant-final');
+      final summarizedMessages = sentBodies.first['messages'] as List;
+      expect(
+        summarizedMessages.any((message) =>
+            message is Map &&
+            message['role'] == 'assistant' &&
+            message['tool_calls'] is List),
+        isTrue,
+      );
+      expect(
+        summarizedMessages.any((message) =>
+            message is Map &&
+            message['role'] == 'tool' &&
+            message['tool_call_id'] == 'call-1'),
+        isTrue,
+      );
+      final currentMessages = sentBodies.last['messages'] as List;
+      expect(
+        currentMessages.whereType<Map<dynamic, dynamic>>().where(
+              (message) => message['role'] == 'tool',
+            ),
+        isEmpty,
+      );
+      expect(jsonEncode(sentBodies.last), contains('Continue from there.'));
+    });
+
+    test('compacts closed tool rounds while keeping the active task request',
+        () async {
+      final sentBodies = <Map<String, dynamic>>[];
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          final body = jsonDecode((request as http.Request).body)
+              as Map<String, dynamic>;
+          sentBodies.add(body);
+          final isSummary = (body['messages'] as List)
+              .whereType<Map<dynamic, dynamic>>()
+              .where((message) => message['role'] == 'system')
+              .any((message) => message['content']
+                  .toString()
+                  .contains('Create a concise factual handoff summary'));
+          final content =
+              isSummary ? 'The user is implementing a long task.' : 'Next step';
+          return _response(
+            '${_event({
+                  'choices': [
+                    {
+                      'delta': {'content': content}
+                    }
+                  ]
+                })}data: [DONE]\n\n',
+          );
+        }),
+      );
+
+      final events = await client
+          .streamEvents(
+            provider: _provider(),
+            history: [
+              ChatMessage(
+                id: 'active-user-request',
+                role: ChatMessageRole.user,
+                content: 'Implement and verify the feature. ' * 9000,
+                status: ChatMessageStatus.complete,
+              ),
+              const ChatMessage(
+                id: 'tool-call-1',
+                role: ChatMessageRole.assistant,
+                content: '',
+                status: ChatMessageStatus.complete,
+                toolCalls: [
+                  AgentToolCall(
+                    id: 'call-1',
+                    name: 'read_project_file',
+                    arguments: {'path': 'README.md'},
+                    rawArguments: '{"path":"README.md"}',
+                    hasValidArguments: true,
+                  ),
+                ],
+              ),
+              const ChatMessage(
+                id: 'tool-result-1',
+                role: ChatMessageRole.tool,
+                content: 'Read the project instructions.',
+                status: ChatMessageStatus.complete,
+                toolCallId: 'call-1',
+                toolName: 'read_project_file',
+              ),
+              const ChatMessage(
+                id: 'tool-call-2',
+                role: ChatMessageRole.assistant,
+                content: '',
+                status: ChatMessageStatus.complete,
+                toolCalls: [
+                  AgentToolCall(
+                    id: 'call-2',
+                    name: 'search_project_files',
+                    arguments: {'query': 'context'},
+                    rawArguments: '{"query":"context"}',
+                    hasValidArguments: true,
+                  ),
+                ],
+              ),
+              const ChatMessage(
+                id: 'tool-result-2',
+                role: ChatMessageRole.tool,
+                content: 'Found the chat client.',
+                status: ChatMessageStatus.complete,
+                toolCallId: 'call-2',
+                toolName: 'search_project_files',
+              ),
+            ],
+            abortTrigger: Completer<void>().future,
+          )
+          .toList();
+
+      expect(
+          events.whereType<ChatContextCompactedEvent>().single.throughMessageId,
+          'tool-result-1');
+      final liveMessages = sentBodies.last['messages'] as List;
+      expect(
+        liveMessages.whereType<Map<dynamic, dynamic>>().firstWhere(
+              (message) => message['role'] == 'user',
+            )['content'],
+        contains(
+            'Continue the active task described in the conversation summary'),
+      );
+      expect(jsonEncode(sentBodies.last),
+          contains('The user is implementing a long task.'));
+      expect(jsonEncode(sentBodies.last), contains('call-2'));
+      expect(jsonEncode(sentBodies.last), contains('Found the chat client.'));
+      expect(jsonEncode(sentBodies.last), isNot(contains('call-1')));
+      expect(
+          utf8.encode(jsonEncode(sentBodies.last)).length, lessThan(16 * 1024));
+    });
+
+    test('retries once after a provider reports context overflow', () async {
+      var requestCount = 0;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          requestCount++;
+          if (requestCount == 1) {
+            return _response(
+              '{"error":{"code":"context_length_exceeded"}}',
+              status: 400,
+            );
+          }
+          final body = jsonDecode((request as http.Request).body)
+              as Map<String, dynamic>;
+          final system = (body['messages'] as List)
+              .whereType<Map<dynamic, dynamic>>()
+              .where((message) => message['role'] == 'system')
+              .map((message) => message['content'].toString())
+              .join('\n');
+          if (system.contains('Create a concise factual handoff summary')) {
+            return _response(
+              '${_event({
+                    'choices': [
+                      {
+                        'delta': {'content': 'Earlier decisions and progress.'}
+                      }
+                    ]
+                  })}data: [DONE]\n\n',
+            );
+          }
+          return _response(
+            '${_event({
+                  'choices': [
+                    {
+                      'delta': {'content': 'continued'}
+                    }
+                  ]
+                })}data: [DONE]\n\n',
+          );
+        }),
+      );
+
+      final events = await client
+          .streamEvents(
+            provider: _provider(),
+            history: const [
+              ChatMessage(
+                id: 'user-1',
+                role: ChatMessageRole.user,
+                content: 'First request',
+                status: ChatMessageStatus.complete,
+              ),
+              ChatMessage(
+                id: 'assistant-1',
+                role: ChatMessageRole.assistant,
+                content: 'First response',
+                status: ChatMessageStatus.complete,
+              ),
+              ChatMessage(
+                id: 'user-2',
+                role: ChatMessageRole.user,
+                content: 'Continue the same task',
+                status: ChatMessageStatus.complete,
+              ),
+            ],
+            abortTrigger: Completer<void>().future,
+          )
+          .toList();
+
+      expect(requestCount, 3);
+      expect(events.whereType<ChatContextCompactedEvent>(), hasLength(1));
+      expect(events.whereType<ChatTextEvent>().map((event) => event.text),
+          ['continued']);
     });
 
     test('rejects a single message larger than the request limit', () async {
@@ -648,7 +1033,7 @@ void main() {
           isA<ChatConnectionException>().having(
             (error) => error.message,
             'message',
-            contains('384 KiB request limit'),
+            contains('remove some attachments'),
           ),
         ),
       );
@@ -751,6 +1136,7 @@ http.StreamedResponse _response(String body, {int status = 200}) =>
 ProviderProfile _provider({
   String endpoint = 'https://api.example.test/v1',
   String? apiKey = 'test-secret',
+  int? contextWindow,
 }) =>
     ProviderProfile(
       id: 'test-provider',
@@ -759,6 +1145,9 @@ ProviderProfile _provider({
       endpoint: endpoint,
       onDevice: false,
       apiKey: apiKey,
+      models: contextWindow == null
+          ? const []
+          : [ModelProfile(id: 'test-model', contextWindow: contextWindow)],
     );
 
 class _FakeClient extends http.BaseClient {
