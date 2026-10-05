@@ -30,13 +30,15 @@ class SettingsScreen extends StatelessWidget {
     required this.onSubagentsEnabledChanged,
     required this.permissionMode,
     required this.onPermissionModeChanged,
-    required this.memoryText,
+    required this.userProfileText,
+    required this.agentMemoryText,
     required this.memoriesEnabled,
     required this.autoRememberPreferences,
     required this.autoSelectSkills,
     required this.dataDirectoryPath,
     required this.isLocalDataReady,
-    required this.onSaveMemories,
+    required this.onSaveUserProfile,
+    required this.onSaveAgentMemory,
     required this.onMemoriesEnabledChanged,
     required this.onAutoRememberChanged,
     required this.onAutoSelectSkillsChanged,
@@ -69,13 +71,15 @@ class SettingsScreen extends StatelessWidget {
   final ValueChanged<bool> onSubagentsEnabledChanged;
   final AgentPermissionMode permissionMode;
   final ValueChanged<AgentPermissionMode> onPermissionModeChanged;
-  final String memoryText;
+  final String userProfileText;
+  final String agentMemoryText;
   final bool memoriesEnabled;
   final bool autoRememberPreferences;
   final bool autoSelectSkills;
   final String? dataDirectoryPath;
   final bool isLocalDataReady;
-  final Future<void> Function(String) onSaveMemories;
+  final Future<void> Function(String) onSaveUserProfile;
+  final Future<void> Function(String) onSaveAgentMemory;
   final ValueChanged<bool> onMemoriesEnabledChanged;
   final ValueChanged<bool> onAutoRememberChanged;
   final ValueChanged<bool> onAutoSelectSkillsChanged;
@@ -183,14 +187,16 @@ class SettingsScreen extends StatelessWidget {
           onRefresh: onRefreshMcpServer,
         ),
       SettingsTab.memory => _MemorySettings(
-          memoryText: memoryText,
+          userProfileText: userProfileText,
+          agentMemoryText: agentMemoryText,
           memoriesEnabled: memoriesEnabled,
           autoRememberPreferences: autoRememberPreferences,
           autoSelectSkills: autoSelectSkills,
           dataDirectoryPath: dataDirectoryPath,
           isLocalDataReady: isLocalDataReady,
           skillsDirectoryPath: skillsDirectoryPath,
-          onSave: onSaveMemories,
+          onSaveUserProfile: onSaveUserProfile,
+          onSaveAgentMemory: onSaveAgentMemory,
           onMemoriesEnabledChanged: onMemoriesEnabledChanged,
           onAutoRememberChanged: onAutoRememberChanged,
           onAutoSelectSkillsChanged: onAutoSelectSkillsChanged,
@@ -310,27 +316,31 @@ class SettingsScreen extends StatelessWidget {
 
 class _MemorySettings extends StatefulWidget {
   const _MemorySettings({
-    required this.memoryText,
+    required this.userProfileText,
+    required this.agentMemoryText,
     required this.memoriesEnabled,
     required this.autoRememberPreferences,
     required this.autoSelectSkills,
     required this.dataDirectoryPath,
     required this.isLocalDataReady,
     required this.skillsDirectoryPath,
-    required this.onSave,
+    required this.onSaveUserProfile,
+    required this.onSaveAgentMemory,
     required this.onMemoriesEnabledChanged,
     required this.onAutoRememberChanged,
     required this.onAutoSelectSkillsChanged,
   });
 
-  final String memoryText;
+  final String userProfileText;
+  final String agentMemoryText;
   final bool memoriesEnabled;
   final bool autoRememberPreferences;
   final bool autoSelectSkills;
   final String? dataDirectoryPath;
   final bool isLocalDataReady;
   final String? skillsDirectoryPath;
-  final Future<void> Function(String) onSave;
+  final Future<void> Function(String) onSaveUserProfile;
+  final Future<void> Function(String) onSaveAgentMemory;
   final ValueChanged<bool> onMemoriesEnabledChanged;
   final ValueChanged<bool> onAutoRememberChanged;
   final ValueChanged<bool> onAutoSelectSkillsChanged;
@@ -340,33 +350,100 @@ class _MemorySettings extends StatefulWidget {
 }
 
 class _MemorySettingsState extends State<_MemorySettings> {
-  late final TextEditingController _controller =
-      TextEditingController(text: widget.memoryText);
-  bool _saving = false;
+  late final TextEditingController _userController =
+      TextEditingController(text: widget.userProfileText);
+  late final TextEditingController _agentController =
+      TextEditingController(text: widget.agentMemoryText);
+  bool _savingUserProfile = false;
+  bool _savingAgentMemory = false;
 
   @override
   void didUpdateWidget(covariant _MemorySettings oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.memoryText != widget.memoryText &&
-        _controller.text == oldWidget.memoryText) {
-      _controller.text = widget.memoryText;
+    if (oldWidget.userProfileText != widget.userProfileText &&
+        _userController.text == oldWidget.userProfileText) {
+      _userController.text = widget.userProfileText;
+    }
+    if (oldWidget.agentMemoryText != widget.agentMemoryText &&
+        _agentController.text == oldWidget.agentMemoryText) {
+      _agentController.text = widget.agentMemoryText;
     }
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _userController.dispose();
+    _agentController.dispose();
     super.dispose();
   }
 
-  Future<void> _save() async {
-    setState(() => _saving = true);
+  Future<void> _saveUserProfile() async {
+    setState(() => _savingUserProfile = true);
     try {
-      await widget.onSave(_controller.text);
+      await widget.onSaveUserProfile(_userController.text);
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) setState(() => _savingUserProfile = false);
     }
   }
+
+  Future<void> _saveAgentMemory() async {
+    setState(() => _savingAgentMemory = true);
+    try {
+      await widget.onSaveAgentMemory(_agentController.text);
+    } finally {
+      if (mounted) setState(() => _savingAgentMemory = false);
+    }
+  }
+
+  Widget _fileCard({
+    required String title,
+    required String description,
+    required TextEditingController controller,
+    required String editorKey,
+    required String saveKey,
+    required String hintText,
+    required bool saving,
+    required VoidCallback? onSave,
+    Widget? trailing,
+  }) =>
+      _SettingsCard(
+        title: title,
+        description: description,
+        trailing: trailing,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              key: Key(editorKey),
+              controller: controller,
+              minLines: 7,
+              maxLines: 12,
+              maxLength: AgentMemoryLimits.maxCharacters,
+              enabled: widget.isLocalDataReady,
+              decoration: InputDecoration(
+                hintText: hintText,
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.icon(
+                key: Key(saveKey),
+                onPressed: onSave,
+                icon: saving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(AppIcons.checkRounded, size: 17),
+                label: Text(saving ? 'Saving' : 'Save file'),
+              ),
+            ),
+          ],
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -374,56 +451,46 @@ class _MemorySettingsState extends State<_MemorySettings> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SettingsCard(
-          title: 'Personal memory',
+        _fileCard(
+          title: 'User profile',
           description:
-              'Keep lasting preferences in an editable local Markdown file.',
+              'Store stable facts about you, your preferences, and how you like to work. The app can save clear preferences automatically.',
+          controller: _userController,
+          editorKey: 'settings.memories.user.editor',
+          saveKey: 'settings.memories.user.save',
+          hintText:
+              '# User profile\n\n## User preferences\n- Add facts about yourself and how you like the agent to work.',
+          saving: _savingUserProfile,
+          onSave: widget.isLocalDataReady && !_savingUserProfile
+              ? _saveUserProfile
+              : null,
           trailing: Switch.adaptive(
             value: widget.memoriesEnabled,
             onChanged: widget.isLocalDataReady
                 ? widget.onMemoriesEnabledChanged
                 : null,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                key: const Key('settings.memories.editor'),
-                controller: _controller,
-                minLines: 8,
-                maxLines: 14,
-                maxLength: AgentMemoryLimits.maxCharacters,
-                enabled: widget.isLocalDataReady,
-                decoration: const InputDecoration(
-                  hintText:
-                      '# Penguin Code memories\n\n## User preferences\n- Add notes you want the agent to remember.',
-                  alignLabelWithHint: true,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton.icon(
-                  key: const Key('settings.memories.save'),
-                  onPressed: widget.isLocalDataReady && !_saving ? _save : null,
-                  icon: _saving
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(AppIcons.checkRounded, size: 17),
-                  label: Text(_saving ? 'Saving' : 'Save memories'),
-                ),
-              ),
-            ],
-          ),
+        ),
+        const SizedBox(height: 13),
+        _fileCard(
+          title: 'Agent notes',
+          description:
+              'Keep verified environment details, conventions, and lessons the agent learns. The agent can update this file with its memory tool.',
+          controller: _agentController,
+          editorKey: 'settings.memories.agent.editor',
+          saveKey: 'settings.memories.agent.save',
+          hintText:
+              '# Penguin Code memory\n\n## Learned notes\n- Add durable facts that help across future chats.',
+          saving: _savingAgentMemory,
+          onSave: widget.isLocalDataReady && !_savingAgentMemory
+              ? _saveAgentMemory
+              : null,
         ),
         const SizedBox(height: 13),
         _SettingsCard(
           title: 'Automatic learning',
           description:
-              'Learn from clear preference statements in your messages. The app does not send a separate memory request to the model.',
+              'The app saves clear preference statements to the user profile. The model can also save durable, verified notes when memory is enabled.',
           child: Column(
             children: [
               SwitchListTile.adaptive(
@@ -456,7 +523,7 @@ class _MemorySettingsState extends State<_MemorySettings> {
         _SettingsCard(
           title: 'Local agent files',
           description: widget.isLocalDataReady
-              ? 'Chats, workspaces, outputs, skills, and Memories.md stay on this computer.'
+              ? 'Chats, workspaces, outputs, skills, and memory files stay on this computer.'
               : 'Preparing the local agent folders…',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -465,6 +532,22 @@ class _MemorySettingsState extends State<_MemorySettings> {
                 widget.dataDirectoryPath ?? 'Waiting for the data folder',
                 style: theme.textTheme.bodySmall,
               ),
+              if (widget.dataDirectoryPath != null) ...[
+                const SizedBox(height: 7),
+                SelectableText(
+                  'User profile: ${_pathToMemoryFile(widget.dataDirectoryPath!, 'USER.md')}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: AppColors.muted,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                SelectableText(
+                  'Agent notes: ${_pathToMemoryFile(widget.dataDirectoryPath!, 'MEMORY.md')}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: AppColors.muted,
+                  ),
+                ),
+              ],
               if (widget.skillsDirectoryPath != null) ...[
                 const SizedBox(height: 7),
                 Text(
@@ -480,6 +563,9 @@ class _MemorySettingsState extends State<_MemorySettings> {
       ],
     );
   }
+
+  String _pathToMemoryFile(String root, String fileName) =>
+      '$root${root.endsWith('\\') || root.endsWith('/') ? '' : '/'}$fileName';
 }
 
 abstract final class AgentMemoryLimits {

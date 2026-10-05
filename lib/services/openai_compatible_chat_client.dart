@@ -170,6 +170,7 @@ class OpenAiCompatibleChatClient {
     String? contextSummary,
     String? contextSummaryThroughMessageId,
     List<Map<String, Object?>> extraTools = const [],
+    List<Map<String, Object?>> independentTools = const [],
   }) =>
       _streamEvents(
         provider: provider,
@@ -184,6 +185,7 @@ class OpenAiCompatibleChatClient {
         contextSummary: contextSummary,
         contextSummaryThroughMessageId: contextSummaryThroughMessageId,
         extraTools: extraTools,
+        independentTools: independentTools,
       );
 
   Stream<ChatStreamEvent> _streamEvents({
@@ -199,6 +201,7 @@ class OpenAiCompatibleChatClient {
     String? contextSummary,
     String? contextSummaryThroughMessageId,
     List<Map<String, Object?>> extraTools = const [],
+    List<Map<String, Object?>> independentTools = const [],
     bool allowAutomaticContextCompaction = true,
     bool forceContextCompaction = false,
     bool retriedContextOverflow = false,
@@ -234,6 +237,7 @@ class OpenAiCompatibleChatClient {
           reasoningEffort,
           skillInstructions,
           extraTools,
+          independentTools,
           contextSummary: summary,
         );
 
@@ -341,6 +345,7 @@ class OpenAiCompatibleChatClient {
           contextSummary: activeSummary,
           contextSummaryThroughMessageId: activeThroughMessageId,
           extraTools: extraTools,
+          independentTools: independentTools,
           forceContextCompaction: true,
           retriedContextOverflow: true,
         )) {
@@ -508,6 +513,7 @@ class OpenAiCompatibleChatClient {
       false,
       null,
       _summaryInstructions,
+      const [],
       const [],
       contextSummary: previousSummary,
     );
@@ -712,6 +718,7 @@ class OpenAiCompatibleChatClient {
       String? reasoningEffort,
       String? skillInstructions,
       List<Map<String, Object?>> extraTools,
+      List<Map<String, Object?>> independentTools,
       {String? contextSummary}) {
     String? wireReasoningEffort;
     if (reasoningEffort != null) {
@@ -755,31 +762,35 @@ class OpenAiCompatibleChatClient {
           {'role': 'system', 'content': systemInstructions.join('\n\n')},
         ...messages,
       ],
-      if (enableProjectTools)
+      if (enableProjectTools || independentTools.isNotEmpty)
         'tools': [
-          ...(planMode
-              ? [
-                  ..._planReadOnlyProjectToolDefinitions,
-                  _planSubmissionToolDefinition
-                ]
-              : fullAccess
-                  ? [
-                      ..._computerWideProjectToolDefinitions,
-                      _chatOutputToolDefinition,
-                      _commandToolDefinition
-                    ]
-                  : allowComputerPaths
-                      ? [
-                          ..._computerWideProjectToolDefinitions,
-                          _chatOutputToolDefinition
-                        ]
-                      : [
-                          ..._projectToolDefinitions,
-                          _chatOutputToolDefinition
-                        ]),
-          if (!planMode) ...extraTools,
+          if (enableProjectTools) ...[
+            ...(planMode
+                ? [
+                    ..._planReadOnlyProjectToolDefinitions,
+                    _planSubmissionToolDefinition
+                  ]
+                : fullAccess
+                    ? [
+                        ..._computerWideProjectToolDefinitions,
+                        _chatOutputToolDefinition,
+                        _commandToolDefinition
+                      ]
+                    : allowComputerPaths
+                        ? [
+                            ..._computerWideProjectToolDefinitions,
+                            _chatOutputToolDefinition
+                          ]
+                        : [
+                            ..._projectToolDefinitions,
+                            _chatOutputToolDefinition
+                          ]),
+            if (!planMode) ...extraTools,
+          ],
+          ...independentTools,
         ],
-      if (enableProjectTools) 'tool_choice': 'auto',
+      if (enableProjectTools || independentTools.isNotEmpty)
+        'tool_choice': 'auto',
     });
   }
 

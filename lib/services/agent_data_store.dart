@@ -27,6 +27,13 @@ class ChatDirectories {
   final Directory outputs;
 }
 
+class AgentMemoryUpdateResult {
+  const AgentMemoryUpdateResult({required this.success, required this.message});
+
+  final bool success;
+  final String message;
+}
+
 class AgentDataStore {
   AgentDataStore({Directory? documentsDirectory, Directory? fallbackDirectory})
       : _documentsDirectory = documentsDirectory,
@@ -35,7 +42,11 @@ class AgentDataStore {
   static const maxMemoryBytes = 16 * 1024;
   static const maxContextSummaryChars = 24000;
   static const maxRememberedPreferences = 80;
-  static const _memoryFileName = 'Memories.md';
+  static const maxMemoryEntries = 80;
+  static const maxMemoryEntryCharacters = 1000;
+  static const _userProfileFileName = 'USER.md';
+  static const _agentMemoryFileName = 'MEMORY.md';
+  static const _legacyMemoryFileName = 'Memories.md';
 
   final Directory? _documentsDirectory;
   final Directory? _fallbackDirectory;
@@ -51,7 +62,11 @@ class AgentDataStore {
         _join([_documents().path, 'Penguin-code']),
       );
 
-  File get memoryFile => File(_join([_requireRoot().path, _memoryFileName]));
+  File get userProfileFile =>
+      File(_join([_requireRoot().path, _userProfileFileName]));
+
+  File get agentMemoryFile =>
+      File(_join([_requireRoot().path, _agentMemoryFileName]));
 
   Directory get skillsDirectory =>
       Directory(_join([_requireRoot().path, 'Skills']));
@@ -66,12 +81,41 @@ class AgentDataStore {
     _root = root;
     await Directory(_join([root.path, 'Chats'])).create(recursive: true);
     await skillsDirectory.create(recursive: true);
-    if (!memoryFile.existsSync()) {
-      await memoryFile.writeAsString(
-        '# Penguin Code memories\n\n## User preferences\n',
+    await _migrateLegacyMemories();
+    if (!userProfileFile.existsSync()) {
+      await userProfileFile.writeAsString(
+        '# User profile\n\n## User preferences\n',
         flush: true,
       );
     }
+    if (!agentMemoryFile.existsSync()) {
+      await agentMemoryFile.writeAsString(
+        '# Penguin Code memory\n\n## Learned notes\n',
+        flush: true,
+      );
+    }
+  }
+
+  Future<void> _migrateLegacyMemories() async {
+    final legacy = File(_join([_requireRoot().path, _legacyMemoryFileName]));
+    if (!legacy.existsSync()) return;
+    if (!userProfileFile.existsSync()) {
+      final contents = await legacy.readAsString();
+      await userProfileFile.writeAsString(contents, flush: true);
+      await legacy.delete();
+      return;
+    }
+    final oldContents = (await legacy.readAsString()).trim();
+    if (oldContents.isNotEmpty) {
+      final currentContents = await userProfileFile.readAsString();
+      if (!currentContents.contains(oldContents)) {
+        await userProfileFile.writeAsString(
+          '${currentContents.trimRight()}\n\n## Imported notes\n$oldContents\n',
+          flush: true,
+        );
+      }
+    }
+    await legacy.delete();
   }
 
   Directory _documents() {
@@ -267,24 +311,39 @@ class AgentDataStore {
     if (file.existsSync()) await file.delete();
   }
 
-  Future<String> readMemories() async {
+  Future<String> readUserProfile() async {
     await initialize();
-    return memoryFile.readAsString();
+    return userProfileFile.readAsString();
   }
 
-  Future<void> writeMemories(String value) async {
+  Future<String> readAgentMemory() async {
+    await initialize();
+    return agentMemoryFile.readAsString();
+  }
+
+  Future<void> writeUserProfile(String value) async {
+    await initialize();
+    await _writeMemoryFile(userProfileFile, value, 'User profile');
+  }
+
+  Future<void> writeAgentMemory(String value) async {
+    await initialize();
+    await _writeMemoryFile(agentMemoryFile, value, 'Agent memory');
+  }
+
+  Future<void> _writeMemoryFile(File file, String value, String label) async {
     await initialize();
     final bytes = utf8.encode(value);
     if (bytes.length > maxMemoryBytes) {
-      throw const FileSystemException('Memory notes exceed the 16 KiB limit.');
+      throw FileSystemException('$label exceeds the 16 KiB limit.');
     }
-    await memoryFile.writeAsString(value, flush: true);
+    await file.writeAsString(value, flush: true);
   }
 
-  Future<bool> rememberExplicitPreference(String message) async {
+  Future<bool> rememberExplicitUserPreference(String message) async {
     final candidate = _explicitPreference(message);
     if (candidate == null) return false;
-    final existing = await readMemories();
+    final existing = await readUserProfile();
     final normalizedCandidate = _normalizeForComparison(candidate);
     final existingLines = existing.split('\n');
     if (existingLines.any((line) =>
@@ -320,9 +379,157 @@ class AgentDataStore {
       }
       existingLines.insert(sectionEnd, '- $candidate');
     }
-    await writeMemories('${existingLines.join('\n').trimRight()}\n');
+    var updated = '${existingLines.join('\n').trimRight()}\n';
+    while (utf8.encode(updated).length > maxMemoryBytes) {
+      final candidateIndex = existingLines.indexWhere((line) =>
+          line.trimLeft().startsWith('- ') &&
+          _normalizeForComparison(line) == normalizedCandidate);
+      final oldestPreferenceIndex = existingLines.indexWhere((line) =>
+          line.trimLeft().startsWith('- ') &&
+          _normalizeForComparison(line) != normalizedCandidate);
+      if (oldestPreferenceIndex < 0 || candidateIndex < 0) return false;
+      existingLines.removeAt(oldestPreferenceIndex);
+      updated = '${existingLines.join('\n').trimRight()}\n';
+    }
+    await writeUserProfile(updated);
     return true;
   }
+
+  Future<AgentMemoryUpdateResult> applyMemoryOperation({
+    required String action,
+    required String target,
+    String? content,
+    String? oldText,
+  }) async {
+    await initialize();
+    if (!const {'user', 'memory'}.contains(target)) {
+      return const AgentMemoryUpdateResult(
+        success: false,
+        message: 'Memory target must be "user" or "memory".',
+      );
+    }
+    if (!const {'add', 'replace', 'remove'}.contains(action)) {
+      return const AgentMemoryUpdateResult(
+        success: false,
+        message: 'Memory action must be add, replace, or remove.',
+      );
+    }
+    final normalizedContent =
+        content == null ? null : content.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (action != 'remove' &&
+        (normalizedContent == null ||
+            normalizedContent.isEmpty ||
+            normalizedContent.length > maxMemoryEntryCharacters ||
+            _containsSensitiveValue(normalizedContent))) {
+      return const AgentMemoryUpdateResult(
+        success: false,
+        message:
+            'Memory entries must be 1 to $maxMemoryEntryCharacters characters and must not contain credentials.',
+      );
+    }
+    final normalizedOldText = oldText?.trim();
+    if (action != 'add' &&
+        (normalizedOldText == null ||
+            normalizedOldText.isEmpty ||
+            normalizedOldText.length > maxMemoryEntryCharacters)) {
+      return const AgentMemoryUpdateResult(
+        success: false,
+        message:
+            'Provide a short old_text value to identify one existing entry.',
+      );
+    }
+
+    final file = target == 'user' ? userProfileFile : agentMemoryFile;
+    final fileName =
+        target == 'user' ? _userProfileFileName : _agentMemoryFileName;
+    final existing = await file.readAsString();
+    final lines = existing.split('\n');
+    if (action == 'add') {
+      final duplicate = lines.any((line) =>
+          line.trimLeft().startsWith('- ') &&
+          _normalizeForComparison(line) ==
+              _normalizeForComparison(normalizedContent!));
+      if (duplicate) {
+        return AgentMemoryUpdateResult(
+          success: true,
+          message: 'That entry is already saved in $fileName.',
+        );
+      }
+      final entryIndexes = [
+        for (var index = 0; index < lines.length; index++)
+          if (lines[index].trimLeft().startsWith('- ')) index,
+      ];
+      if (entryIndexes.length >= maxMemoryEntries) {
+        return AgentMemoryUpdateResult(
+          success: false,
+          message:
+              '$fileName already has $maxMemoryEntries entries. Remove or replace an older entry first.',
+        );
+      }
+      final sectionTitle =
+          target == 'user' ? '## User preferences' : '## Learned notes';
+      final sectionStart = lines.indexWhere(
+        (line) => line.trim().toLowerCase() == sectionTitle.toLowerCase(),
+      );
+      if (sectionStart < 0) {
+        lines
+          ..add('')
+          ..add(sectionTitle)
+          ..add('- $normalizedContent');
+      } else {
+        var sectionEnd = lines.length;
+        for (var index = sectionStart + 1; index < lines.length; index++) {
+          if (RegExp(r'^#{1,2}\s').hasMatch(lines[index])) {
+            sectionEnd = index;
+            break;
+          }
+        }
+        lines.insert(sectionEnd, '- $normalizedContent');
+      }
+    } else {
+      final matchedIndexes = [
+        for (var index = 0; index < lines.length; index++)
+          if (lines[index].trimLeft().startsWith('- ') &&
+              lines[index]
+                  .substring(lines[index].indexOf('- ') + 2)
+                  .contains(normalizedOldText!))
+            index,
+      ];
+      if (matchedIndexes.length != 1) {
+        return AgentMemoryUpdateResult(
+          success: false,
+          message: matchedIndexes.isEmpty
+              ? 'No unique entry matched old_text in $fileName.'
+              : 'old_text matched multiple entries in $fileName. Use a more specific value.',
+        );
+      }
+      if (action == 'remove') {
+        lines.removeAt(matchedIndexes.single);
+      } else {
+        lines[matchedIndexes.single] = '- $normalizedContent';
+      }
+    }
+
+    final updated = '${lines.join('\n').trimRight()}\n';
+    if (utf8.encode(updated).length > maxMemoryBytes) {
+      return AgentMemoryUpdateResult(
+        success: false,
+        message:
+            '$fileName exceeds the 16 KiB limit. Remove or shorten older entries first.',
+      );
+    }
+    await file.writeAsString(updated, flush: true);
+    return AgentMemoryUpdateResult(
+      success: true,
+      message:
+          'Updated $fileName. The change will be included in the next model request.',
+    );
+  }
+
+  bool _containsSensitiveValue(String value) => RegExp(
+        r'(?:api[_ -]?key|password|passwd|secret|token|bearer\s+|sk-[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)',
+        caseSensitive: false,
+      ).hasMatch(value);
 
   String? _explicitPreference(String message) {
     final candidate = message.trim().replaceAll(RegExp(r'\s+'), ' ');

@@ -5,6 +5,86 @@ import 'package:penguin_code/models.dart';
 import 'package:penguin_code/services/agent_data_store.dart';
 
 void main() {
+  test('migrates legacy memories into the user profile without losing text',
+      () async {
+    final documents = await Directory.systemTemp.createTemp(
+      'penguin-agent-memory-migration-',
+    );
+    addTearDown(() => documents.delete(recursive: true));
+    final root =
+        Directory('${documents.path}${Platform.pathSeparator}Penguin-code')
+          ..createSync(recursive: true);
+    final legacy = File(
+      '${root.path}${Platform.pathSeparator}Memories.md',
+    )..writeAsStringSync(
+        '# Penguin Code memories\n\n## User preferences\n- Keep answers concise.\n',
+      );
+    final store = AgentDataStore(documentsDirectory: documents);
+
+    await store.initialize();
+
+    expect(await store.readUserProfile(), contains('- Keep answers concise.'));
+    expect(await store.readAgentMemory(), contains('## Learned notes'));
+    expect(legacy.existsSync(), isFalse);
+    expect(store.userProfileFile.existsSync(), isTrue);
+    expect(store.agentMemoryFile.existsSync(), isTrue);
+  });
+
+  test('keeps user profile and agent notes in separate editable files',
+      () async {
+    final documents = await Directory.systemTemp.createTemp(
+      'penguin-agent-memory-operations-',
+    );
+    addTearDown(() => documents.delete(recursive: true));
+    final store = AgentDataStore(documentsDirectory: documents);
+    await store.initialize();
+
+    final userUpdate = await store.applyMemoryOperation(
+      action: 'add',
+      target: 'user',
+      content: 'Prefers short explanations',
+    );
+    final agentUpdate = await store.applyMemoryOperation(
+      action: 'add',
+      target: 'memory',
+      content: 'The app runs as a Flutter desktop client',
+    );
+
+    expect(userUpdate.success, isTrue);
+    expect(agentUpdate.success, isTrue);
+    expect(
+        await store.readUserProfile(), contains('Prefers short explanations'));
+    expect(await store.readUserProfile(), isNot(contains('Flutter desktop')));
+    expect(await store.readAgentMemory(), contains('Flutter desktop client'));
+    expect(await store.readAgentMemory(), isNot(contains('Prefers short')));
+
+    final replacement = await store.applyMemoryOperation(
+      action: 'replace',
+      target: 'memory',
+      oldText: 'Flutter desktop',
+      content: 'The app uses native Flutter desktop runners',
+    );
+    final removal = await store.applyMemoryOperation(
+      action: 'remove',
+      target: 'user',
+      oldText: 'short explanations',
+    );
+    final secret = await store.applyMemoryOperation(
+      action: 'add',
+      target: 'memory',
+      content: 'Remember this API key: sk-1234567890abcdef',
+    );
+
+    expect(replacement.success, isTrue);
+    expect(removal.success, isTrue);
+    expect(secret.success, isFalse);
+    expect(await store.readAgentMemory(), contains('native Flutter desktop'));
+    expect(await store.readAgentMemory(),
+        isNot(contains('Flutter desktop client')));
+    expect(
+        await store.readUserProfile(), isNot(contains('short explanations')));
+  });
+
   test('persists resumable subagent task and child conversation together',
       () async {
     final documents = await Directory.systemTemp.createTemp(

@@ -995,6 +995,104 @@ void main() {
     expect(find.text('Bearer private-test-token'), findsNothing);
   });
 
+  testWidgets('memory tool stores agent notes separately in Chat only mode', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        final body =
+            jsonDecode((request as http.Request).body) as Map<String, dynamic>;
+        requests.add(body);
+        final response = switch (responseIndex++) {
+          0 => _sseToolCall(
+              name: 'memory',
+              arguments: jsonEncode({
+                'action': 'add',
+                'target': 'memory',
+                'content': 'The chat app uses Flutter desktop runners',
+              }),
+              id: 'memory-add',
+            ),
+          1 => _sseChunk('I saved that durable note.'),
+          _ => _sseChunk('I remember the app architecture.'),
+        };
+        return _chatResponse('$response\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(_testApp(chatClient: client));
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Memories'));
+    await tester.pumpAndSettle();
+    expect(
+        find.byKey(const Key('settings.memories.user.editor')), findsOneWidget);
+    expect(find.byKey(const Key('settings.memories.agent.editor')),
+        findsOneWidget);
+    await tester.tap(find.text('Tools and permissions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('project.access.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('project.access.option.chatOnly')),
+    );
+    await tester.pumpAndSettle();
+
+    await _createNewChat(tester);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Remember a durable note about the app architecture.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    for (var attempt = 0; attempt < 40 && requests.isEmpty; attempt++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+    expect(requests, hasLength(1));
+    expect(
+      (requests.first['tools'] as List<dynamic>)
+          .cast<Map<String, dynamic>>()
+          .map((tool) => (tool['function'] as Map<String, dynamic>)['name']),
+      ['memory'],
+    );
+    for (var attempt = 0; attempt < 40 && responseIndex < 2; attempt++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+    expect(responseIndex, 2, reason: 'The memory tool turn should complete.');
+    await _pumpUntilVisible(tester, find.text('I saved that durable note.'));
+
+    expect(await tester.runAsync(_testDataStore.readAgentMemory),
+        contains('Flutter desktop runners'));
+    expect(await tester.runAsync(_testDataStore.readUserProfile),
+        isNot(contains('Flutter desktop runners')));
+
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'What do you remember about the app?',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.text('I remember the app architecture.'),
+    );
+    final nextTurnInstructions = ((requests.last['messages'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .where((message) => message['role'] == 'system')
+        .map((message) => message['content'] as String)).join('\n');
+    expect(nextTurnInstructions, contains('Agent notes from MEMORY.md'));
+    expect(nextTurnInstructions, contains('Flutter desktop runners'));
+  });
+
   testWidgets('searches discovered models and sends the selected model id', (
     tester,
   ) async {
