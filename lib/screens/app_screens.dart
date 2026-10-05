@@ -1408,7 +1408,7 @@ class _ToolActionCard extends StatelessWidget {
                     padding: const EdgeInsets.only(top: 10),
                     child: Text(
                       isMcpTool
-                          ? 'This tool will run in the connected local MCP server. Review the request before every call.'
+                          ? 'This tool will run on the connected MCP server. Review the request before every call.'
                           : isEdit
                               ? 'Review the proposed replacement. It applies only if the file was read and has not changed since then.'
                               : 'This request can access supported files anywhere on your computer. The selected access mode controls approval.',

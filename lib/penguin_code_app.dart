@@ -18,6 +18,7 @@ import 'services/project_tool_executor.dart';
 import 'services/tool_call_loop_guard.dart';
 import 'services/bundled_skill_repository.dart';
 import 'services/mcp_stdio_client.dart';
+import 'services/mcp_credential_store.dart';
 import 'screens/app_screens.dart';
 import 'screens/skills_screen.dart';
 import 'screens/settings_screen.dart';
@@ -112,6 +113,7 @@ class PenguinCodeApp extends StatelessWidget {
     this.chatClient,
     this.attachmentPicker,
     this.mcpTransportFactory,
+    this.mcpCredentialStore,
     this.dataStore,
   });
 
@@ -122,6 +124,7 @@ class PenguinCodeApp extends StatelessWidget {
     List<ChatAttachment> alreadyAttached,
   )? attachmentPicker;
   final McpTransportFactory? mcpTransportFactory;
+  final McpCredentialStore? mcpCredentialStore;
   final AgentDataStore? dataStore;
 
   @override
@@ -135,6 +138,7 @@ class PenguinCodeApp extends StatelessWidget {
         chatClient: chatClient,
         attachmentPicker: attachmentPicker,
         mcpTransportFactory: mcpTransportFactory,
+        mcpCredentialStore: mcpCredentialStore,
         dataStore: dataStore,
       ),
     );
@@ -148,6 +152,7 @@ class PenguinHomeShell extends StatefulWidget {
     this.chatClient,
     this.attachmentPicker,
     this.mcpTransportFactory,
+    this.mcpCredentialStore,
     this.dataStore,
   });
 
@@ -158,6 +163,7 @@ class PenguinHomeShell extends StatefulWidget {
     List<ChatAttachment> alreadyAttached,
   )? attachmentPicker;
   final McpTransportFactory? mcpTransportFactory;
+  final McpCredentialStore? mcpCredentialStore;
   final AgentDataStore? dataStore;
 
   @override
@@ -209,6 +215,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final _projectInstructionRepository = ProjectInstructionRepository();
   final _skillRepository = BundledSkillRepository();
   final _skillPreferences = SharedPreferencesAsync();
+  late final McpCredentialStore _mcpCredentialStore =
+      widget.mcpCredentialStore ?? SecureMcpCredentialStore();
   late final McpServerManager _mcpServerManager = McpServerManager(
     transportFactory: widget.mcpTransportFactory,
     onChanged: () {
@@ -268,13 +276,32 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       if (saved == null || saved.isEmpty) return;
       final decoded = jsonDecode(saved);
       if (decoded is! List) return;
-      final profiles = decoded
+      final savedProfiles = decoded
           .map(McpServerProfile.fromJson)
           .whereType<McpServerProfile>()
           .take(McpServerManager.maxConnectedServers)
           .toList(growable: false);
+      var credentialStoreUnavailable = false;
+      final profiles = <McpServerProfile>[];
+      for (final profile in savedProfiles) {
+        if (profile.credentialHeaderNames.isEmpty) {
+          profiles.add(profile);
+          continue;
+        }
+        try {
+          profiles.add(profile.copyWith(
+            headers: await _mcpCredentialStore.readHeaders(profile.id),
+          ));
+        } catch (_) {
+          credentialStoreUnavailable = true;
+          profiles.add(profile);
+        }
+      }
       if (!mounted) return;
       setState(() => _mcpServers.addAll(profiles));
+      if (credentialStoreUnavailable) {
+        _showNotice('Saved MCP credentials could not be accessed.');
+      }
       for (final server in profiles.where((server) => server.enabled)) {
         await _mcpServerManager.connect(server);
       }
@@ -316,10 +343,49 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     );
   }
 
-  void _addMcpServer(McpServerProfile server) {
-    setState(() => _mcpServers.add(server));
-    unawaited(_saveMcpServers());
-    _showNotice('MCP server added. Connect it to expose its tools in chat.');
+  Future<void> _addMcpServer(McpServerProfile server) async {
+    try {
+      if (server.headers.isNotEmpty) {
+        await _mcpCredentialStore.writeHeaders(server.id, server.headers);
+      }
+      final saved = server.copyWith(
+        savedHeaderNames: server.headers.keys.toList(growable: false),
+      );
+      if (!mounted) return;
+      setState(() => _mcpServers.add(saved));
+      await _saveMcpServers();
+      _showNotice('MCP server added. Connect it to expose its tools in chat.');
+    } catch (_) {
+      _showNotice('MCP server credentials could not be saved securely.');
+    }
+  }
+
+  Future<void> _updateMcpServer(
+    McpServerProfile original,
+    McpServerProfile updated,
+  ) async {
+    try {
+      if (original.credentialHeaderNames.isNotEmpty ||
+          updated.headers.isNotEmpty) {
+        await _mcpCredentialStore.writeHeaders(updated.id, updated.headers);
+      }
+      final index =
+          _mcpServers.indexWhere((server) => server.id == original.id);
+      if (index < 0 || !mounted) return;
+      final saved = updated.copyWith(
+        savedHeaderNames: updated.headers.keys.toList(growable: false),
+      );
+      setState(() => _mcpServers[index] = saved);
+      await _saveMcpServers();
+      if (saved.enabled) {
+        await _mcpServerManager.connect(saved);
+      } else {
+        await _mcpServerManager.disconnect(saved.id);
+      }
+      _showNotice('MCP server updated.');
+    } catch (_) {
+      _showNotice('MCP server credentials could not be saved securely.');
+    }
   }
 
   void _toggleMcpServer(McpServerProfile server, bool enabled) {
@@ -338,6 +404,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   void _deleteMcpServer(McpServerProfile server) {
     setState(() => _mcpServers.removeWhere((item) => item.id == server.id));
     unawaited(_mcpServerManager.disconnect(server.id));
+    if (server.credentialHeaderNames.isNotEmpty) {
+      unawaited(_mcpCredentialStore.deleteHeaders(server.id));
+    }
     unawaited(_saveMcpServers());
   }
 
@@ -3094,6 +3163,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                           .statusFor(server.id),
                                   },
                                   onAddMcpServer: _addMcpServer,
+                                  onUpdateMcpServer: _updateMcpServer,
                                   onToggleMcpServer: _toggleMcpServer,
                                   onDeleteMcpServer: _deleteMcpServer,
                                   onRefreshMcpServer: _refreshMcpServer,

@@ -3,31 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../models.dart';
+import 'mcp_remote_transport.dart';
+import 'mcp_transport.dart';
+
+export 'mcp_transport.dart'
+    show McpException, McpStdioTransport, McpTransportFactory;
 
 const _mcpProtocolVersion = '2025-11-25';
 
-class McpException implements Exception {
-  const McpException(this.message);
-
-  final String message;
-
-  @override
-  String toString() => message;
-}
-
-abstract interface class McpStdioTransport {
-  Stream<String> get lines;
-
-  void sendLine(String line);
-
-  Future<void> close();
-}
-
-typedef McpTransportFactory = Future<McpStdioTransport> Function(
-  McpServerProfile server,
-);
-
-class _ProcessMcpStdioTransport implements McpStdioTransport {
+class _ProcessMcpStdioTransport implements McpTransport {
   _ProcessMcpStdioTransport(this._process) {
     _process.stderr.listen((_) {});
     _process.stdout.listen(
@@ -178,7 +162,7 @@ class McpAgentToolDefinition {
 class McpStdioClient {
   McpStdioClient._(this._transport, this.server);
 
-  static const maxMessageBytes = 1024 * 1024;
+  static const maxMessageBytes = mcpMaxMessageBytes;
   static const maxToolArgumentBytes = 64 * 1024;
   static const maxToolOutputCharacters = 24000;
   static const maxToolsPerServer = 48;
@@ -200,7 +184,7 @@ class McpStdioClient {
     McpServerProfile server, {
     McpTransportFactory? transportFactory,
   }) async {
-    final transport = await (transportFactory ?? _startProcess)(server);
+    final transport = await (transportFactory ?? _startTransport)(server);
     final client = McpStdioClient._(transport, server);
     client._subscription = transport.lines.listen(
       client._onLine,
@@ -220,10 +204,16 @@ class McpStdioClient {
     }
   }
 
-  static Future<McpStdioTransport> _startProcess(
+  static Future<McpTransport> _startTransport(
     McpServerProfile server,
-  ) async =>
-      _ProcessMcpStdioTransport.start(server);
+  ) async {
+    return switch (server.transport) {
+      McpTransportType.stdio => _ProcessMcpStdioTransport.start(server),
+      McpTransportType.http ||
+      McpTransportType.sse =>
+        McpRemoteTransport.connect(server),
+    };
+  }
 
   Future<void> _initialize() async {
     final result = await _request(

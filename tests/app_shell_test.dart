@@ -11,6 +11,7 @@ import 'package:penguin_code/penguin_code_app.dart';
 import 'package:penguin_code/services/agent_data_store.dart';
 import 'package:penguin_code/services/openai_compatible_chat_client.dart';
 import 'package:penguin_code/services/mcp_stdio_client.dart';
+import 'package:penguin_code/services/mcp_credential_store.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -951,6 +952,47 @@ void main() {
       },
     ]);
     expect(find.textContaining('MCP tool · lookup'), findsOneWidget);
+  });
+
+  testWidgets('remote MCP settings store authorization headers securely', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final credentials = _RecordingMcpCredentialStore();
+    await tester.pumpWidget(_testApp(mcpCredentialStore: credentials));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('MCP servers'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings.mcp.add')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('settings.mcp.name')),
+      'Remote tools',
+    );
+    await tester.tap(find.byKey(const Key('settings.mcp.transport')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('HTTP (Streamable HTTP)').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('settings.mcp.endpoint')),
+      'https://mcp.example.test/mcp',
+    );
+    await tester.enterText(
+      find.byKey(const Key('settings.mcp.headers')),
+      'Authorization: Bearer private-test-token',
+    );
+    await tester.tap(find.byKey(const Key('settings.mcp.add.save')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('https://mcp.example.test/mcp'), findsOneWidget);
+    expect(credentials.savedHeaders, hasLength(1));
+    expect(credentials.savedHeaders.values.single, {
+      'Authorization': 'Bearer private-test-token',
+    });
+    expect(find.text('Bearer private-test-token'), findsNothing);
   });
 
   testWidgets('searches discovered models and sends the selected model id', (
@@ -2043,12 +2085,14 @@ PenguinCodeApp _testApp({
     List<ChatAttachment> alreadyAttached,
   )? attachmentPicker,
   McpTransportFactory? mcpTransportFactory,
+  McpCredentialStore? mcpCredentialStore,
 }) =>
     PenguinCodeApp(
       initialProjects: initialProjects,
       chatClient: chatClient,
       attachmentPicker: attachmentPicker,
       mcpTransportFactory: mcpTransportFactory,
+      mcpCredentialStore: mcpCredentialStore,
       dataStore: _testDataStore,
     );
 
@@ -2233,6 +2277,27 @@ class _FakeChatClient extends http.BaseClient {
       request.method == 'GET'
           ? Future.value(_modelsResponse())
           : handler(request);
+}
+
+class _RecordingMcpCredentialStore implements McpCredentialStore {
+  final savedHeaders = <String, Map<String, String>>{};
+
+  @override
+  Future<Map<String, String>> readHeaders(String serverId) async =>
+      savedHeaders[serverId] ?? const {};
+
+  @override
+  Future<void> writeHeaders(
+    String serverId,
+    Map<String, String> headers,
+  ) async {
+    savedHeaders[serverId] = Map.unmodifiable(headers);
+  }
+
+  @override
+  Future<void> deleteHeaders(String serverId) async {
+    savedHeaders.remove(serverId);
+  }
 }
 
 class _AppFakeMcpTransport implements McpStdioTransport {

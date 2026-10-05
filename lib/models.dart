@@ -8,34 +8,69 @@ enum ReasoningSummary { automatic, concise, detailed, none }
 
 enum AgentTaskStatus { queued, running, completed, failed, stopped }
 
+enum McpTransportType { stdio, http, sse }
+
 class McpServerProfile {
   const McpServerProfile({
     required this.id,
     required this.name,
-    required this.command,
+    this.transport = McpTransportType.stdio,
+    this.command = '',
     this.arguments = const [],
+    this.endpoint = '',
+    this.headers = const {},
+    this.savedHeaderNames = const [],
     this.enabled = false,
   });
 
   final String id;
   final String name;
+  final McpTransportType transport;
   final String command;
   final List<String> arguments;
+  final String endpoint;
+
+  /// Request headers are loaded from secure storage and are never serialized.
+  final Map<String, String> headers;
+
+  /// Header names are safe metadata; values stay in the OS secure store.
+  final List<String> savedHeaderNames;
   final bool enabled;
 
-  McpServerProfile copyWith({bool? enabled}) => McpServerProfile(
+  List<String> get credentialHeaderNames => List.unmodifiable({
+        ...savedHeaderNames,
+        ...headers.keys,
+      });
+
+  McpServerProfile copyWith({
+    McpTransportType? transport,
+    String? command,
+    List<String>? arguments,
+    String? endpoint,
+    Map<String, String>? headers,
+    List<String>? savedHeaderNames,
+    bool? enabled,
+  }) =>
+      McpServerProfile(
         id: id,
         name: name,
-        command: command,
-        arguments: arguments,
+        transport: transport ?? this.transport,
+        command: command ?? this.command,
+        arguments: arguments ?? this.arguments,
+        endpoint: endpoint ?? this.endpoint,
+        headers: headers ?? this.headers,
+        savedHeaderNames: savedHeaderNames ?? this.savedHeaderNames,
         enabled: enabled ?? this.enabled,
       );
 
   Map<String, Object?> toJson() => {
         'id': id,
         'name': name,
+        'transport': transport.name,
         'command': command,
         'arguments': arguments,
+        'endpoint': endpoint,
+        'headerNames': credentialHeaderNames,
         'enabled': enabled,
       };
 
@@ -45,6 +80,20 @@ class McpServerProfile {
     final name = value['name'];
     final command = value['command'];
     final arguments = value['arguments'];
+    final transportName = value['transport'];
+    final transport = transportName == null
+        ? McpTransportType.stdio
+        : McpTransportType.values
+            .where((type) => type.name == transportName)
+            .firstOrNull;
+    final endpoint = value['endpoint'] ?? '';
+    final headerNamesValue = value['headerNames'];
+    final headerNames = headerNamesValue == null
+        ? const <String>[]
+        : headerNamesValue is List &&
+                headerNamesValue.every((item) => item is String)
+            ? List<String>.unmodifiable(headerNamesValue.cast<String>())
+            : null;
     final parsedArguments = arguments == null
         ? const <String>[]
         : arguments is List && arguments.every((item) => item is String)
@@ -55,12 +104,28 @@ class McpServerProfile {
         name is! String ||
         name.trim().isEmpty ||
         name.trim().length > 80 ||
-        command is! String ||
-        command.trim().isEmpty ||
-        command.trim().length > 1024 ||
-        command.contains('\n') ||
-        command.contains('\r') ||
+        transport == null ||
+        command != null && command is! String ||
+        endpoint is! String ||
+        endpoint.length > 2048 ||
+        headerNames == null ||
+        headerNames.length > 32 ||
         parsedArguments == null) {
+      return null;
+    }
+    final parsedCommand = command is String ? command : '';
+    if (transport == McpTransportType.stdio &&
+        (parsedCommand.trim().isEmpty ||
+            parsedCommand.trim().length > 1024 ||
+            parsedCommand.contains('\n') ||
+            parsedCommand.contains('\r'))) {
+      return null;
+    }
+    if (transport != McpTransportType.stdio &&
+        !isAllowedMcpEndpoint(endpoint)) {
+      return null;
+    }
+    if (headerNames.any((header) => !isValidMcpHeaderName(header))) {
       return null;
     }
     if (parsedArguments.length > 64 ||
@@ -71,11 +136,59 @@ class McpServerProfile {
     return McpServerProfile(
       id: id,
       name: name.trim(),
-      command: command.trim(),
+      transport: transport,
+      command: parsedCommand.trim(),
       arguments: parsedArguments,
+      endpoint: endpoint.trim(),
+      savedHeaderNames: headerNames,
       enabled: value['enabled'] == true,
     );
   }
+}
+
+bool isAllowedMcpEndpoint(String value) {
+  if (value.isEmpty ||
+      value.length > 2048 ||
+      value.contains('\n') ||
+      value.contains('\r')) {
+    return false;
+  }
+  final uri = Uri.tryParse(value);
+  if (uri == null ||
+      !uri.hasAuthority ||
+      uri.userInfo.isNotEmpty ||
+      uri.fragment.isNotEmpty ||
+      !const {'http', 'https'}.contains(uri.scheme.toLowerCase())) {
+    return false;
+  }
+  return uri.scheme.toLowerCase() == 'https' || _isLoopbackHost(uri.host);
+}
+
+bool isValidMcpHeaderName(String value) =>
+    value.length <= 128 &&
+    RegExp(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$").hasMatch(value) &&
+    !const {
+      'accept',
+      'content-length',
+      'content-type',
+      'host',
+      'mcp-protocol-version',
+      'mcp-session-id',
+    }.contains(value.toLowerCase());
+
+bool _isLoopbackHost(String host) {
+  final normalized = host.toLowerCase();
+  if (normalized == 'localhost' ||
+      normalized == '::1' ||
+      normalized == '[::1]') {
+    return true;
+  }
+  final octets = normalized.split('.');
+  if (octets.length != 4) return false;
+  final address = octets.map(int.tryParse).toList(growable: false);
+  return address.every((octet) => octet != null && octet <= 255) &&
+      address.first == 127 &&
+      octets.join('.') == address.join('.');
 }
 
 enum ChatMessageRole { user, assistant, tool }

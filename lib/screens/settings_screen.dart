@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../app_theme.dart';
@@ -42,6 +44,7 @@ class SettingsScreen extends StatelessWidget {
     required this.mcpServers,
     required this.mcpServerStatuses,
     required this.onAddMcpServer,
+    required this.onUpdateMcpServer,
     required this.onToggleMcpServer,
     required this.onDeleteMcpServer,
     required this.onRefreshMcpServer,
@@ -79,7 +82,9 @@ class SettingsScreen extends StatelessWidget {
   final String? skillsDirectoryPath;
   final List<McpServerProfile> mcpServers;
   final Map<String, McpServerStatus> mcpServerStatuses;
-  final ValueChanged<McpServerProfile> onAddMcpServer;
+  final Future<void> Function(McpServerProfile) onAddMcpServer;
+  final Future<void> Function(McpServerProfile, McpServerProfile)
+      onUpdateMcpServer;
   final void Function(McpServerProfile, bool) onToggleMcpServer;
   final ValueChanged<McpServerProfile> onDeleteMcpServer;
   final ValueChanged<McpServerProfile> onRefreshMcpServer;
@@ -97,7 +102,8 @@ class SettingsScreen extends StatelessWidget {
         SettingsTab.general => 'Application preferences and active project.',
         SettingsTab.models => 'Connection profiles and available models.',
         SettingsTab.tools => 'Choose which actions require your approval.',
-        SettingsTab.mcp => 'Connect local tool servers to your agent.',
+        SettingsTab.mcp =>
+          'Connect local and remote tool servers to your agent.',
         SettingsTab.memory => 'Personal context and skill matching.',
         SettingsTab.shortcuts => 'Quick actions for working from the keyboard.',
       };
@@ -171,6 +177,7 @@ class SettingsScreen extends StatelessWidget {
           servers: mcpServers,
           statuses: mcpServerStatuses,
           onAdd: onAddMcpServer,
+          onUpdate: onUpdateMcpServer,
           onToggle: onToggleMcpServer,
           onDelete: onDeleteMcpServer,
           onRefresh: onRefreshMcpServer,
@@ -1169,6 +1176,7 @@ class _McpSettings extends StatelessWidget {
     required this.servers,
     required this.statuses,
     required this.onAdd,
+    required this.onUpdate,
     required this.onToggle,
     required this.onDelete,
     required this.onRefresh,
@@ -1176,7 +1184,8 @@ class _McpSettings extends StatelessWidget {
 
   final List<McpServerProfile> servers;
   final Map<String, McpServerStatus> statuses;
-  final ValueChanged<McpServerProfile> onAdd;
+  final Future<void> Function(McpServerProfile) onAdd;
+  final Future<void> Function(McpServerProfile, McpServerProfile) onUpdate;
   final void Function(McpServerProfile, bool) onToggle;
   final ValueChanged<McpServerProfile> onDelete;
   final ValueChanged<McpServerProfile> onRefresh;
@@ -1186,7 +1195,18 @@ class _McpSettings extends StatelessWidget {
       context: context,
       builder: (context) => const _McpServerDialog(),
     );
-    if (profile != null) onAdd(profile);
+    if (profile != null) await onAdd(profile);
+  }
+
+  Future<void> _editServer(
+    BuildContext context,
+    McpServerProfile server,
+  ) async {
+    final updated = await showDialog<McpServerProfile>(
+      context: context,
+      builder: (context) => _McpServerDialog(existing: server),
+    );
+    if (updated != null) await onUpdate(server, updated);
   }
 
   @override
@@ -1198,7 +1218,7 @@ class _McpSettings extends StatelessWidget {
           children: [
             const Expanded(
               child: Text(
-                'Local MCP servers',
+                'MCP servers',
                 style: TextStyle(
                   color: AppColors.ink,
                   fontSize: 14,
@@ -1216,7 +1236,7 @@ class _McpSettings extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         const Text(
-          'MCP servers are programs that run on this computer. Only enable servers you trust. Their discovered tools are sent to the selected model, and every tool call asks for your approval, including in Full access mode.',
+          'Connect local programs over stdio or remote endpoints over HTTP and SSE. Only enable servers you trust. Their tools and results are sent to the selected model, and every tool call asks for your approval, including in Full access mode.',
           style: TextStyle(color: AppColors.muted, fontSize: 12, height: 1.5),
         ),
         const SizedBox(height: 14),
@@ -1225,7 +1245,7 @@ class _McpSettings extends StatelessWidget {
             child: Padding(
               padding: EdgeInsets.all(16),
               child: Text(
-                'No MCP servers configured. Add a local server command to make its tools available in chat.',
+                'No MCP servers configured. Add a local command or remote endpoint to make its tools available in chat.',
                 style: TextStyle(color: AppColors.muted, fontSize: 12),
               ),
             ),
@@ -1238,6 +1258,7 @@ class _McpSettings extends StatelessWidget {
                   state: McpServerConnectionState.disconnected,
                 ),
             onToggle: (enabled) => onToggle(server, enabled),
+            onEdit: () => _editServer(context, server),
             onDelete: () => onDelete(server),
             onRefresh: () => onRefresh(server),
           ),
@@ -1251,6 +1272,7 @@ class _McpServerCard extends StatelessWidget {
     required this.server,
     required this.status,
     required this.onToggle,
+    required this.onEdit,
     required this.onDelete,
     required this.onRefresh,
   });
@@ -1258,6 +1280,7 @@ class _McpServerCard extends StatelessWidget {
   final McpServerProfile server;
   final McpServerStatus status;
   final ValueChanged<bool> onToggle;
+  final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback onRefresh;
 
@@ -1271,6 +1294,11 @@ class _McpServerCard extends StatelessWidget {
         'Connected · ${status.toolCount} ${status.toolCount == 1 ? 'tool' : 'tools'}',
       McpServerConnectionState.error =>
         'Connection failed: ${status.error ?? 'Unknown error.'}',
+    };
+    final connectionTarget = switch (server.transport) {
+      McpTransportType.stdio =>
+        '${server.command}${server.arguments.isEmpty ? '' : ' ${server.arguments.join(' ')}'}',
+      McpTransportType.http || McpTransportType.sse => server.endpoint,
     };
     return Card(
       margin: const EdgeInsets.only(bottom: 9),
@@ -1296,6 +1324,11 @@ class _McpServerCard extends StatelessWidget {
                   ),
                 ),
                 IconButton(
+                  tooltip: 'Edit server',
+                  onPressed: onEdit,
+                  icon: const Icon(AppIcons.editNoteRounded, size: 17),
+                ),
+                IconButton(
                   tooltip: 'Refresh tools',
                   onPressed: connected ? onRefresh : null,
                   icon: const Icon(AppIcons.refreshRounded, size: 17),
@@ -1310,7 +1343,7 @@ class _McpServerCard extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(left: 28, right: 8),
               child: Text(
-                '${server.command}${server.arguments.isEmpty ? '' : ' ${server.arguments.join(' ')}'}',
+                connectionTarget,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -1357,7 +1390,9 @@ class _McpServerCard extends StatelessWidget {
 }
 
 class _McpServerDialog extends StatefulWidget {
-  const _McpServerDialog();
+  const _McpServerDialog({this.existing});
+
+  final McpServerProfile? existing;
 
   @override
   State<_McpServerDialog> createState() => _McpServerDialogState();
@@ -1368,27 +1403,82 @@ class _McpServerDialogState extends State<_McpServerDialog> {
   final _name = TextEditingController();
   final _command = TextEditingController();
   final _arguments = TextEditingController();
+  final _endpoint = TextEditingController();
+  final _headers = TextEditingController();
+  late McpTransportType _transport;
+  bool _clearSavedCredentials = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final existing = widget.existing;
+    _transport = existing?.transport ?? McpTransportType.stdio;
+    _name.text = existing?.name ?? '';
+    _command.text = existing?.command ?? '';
+    _arguments.text = existing?.arguments.join('\n') ?? '';
+    _endpoint.text = existing?.endpoint ?? '';
+  }
 
   @override
   void dispose() {
     _name.dispose();
     _command.dispose();
     _arguments.dispose();
+    _endpoint.dispose();
+    _headers.dispose();
     super.dispose();
+  }
+
+  Map<String, String>? _parseHeaders() {
+    final headers = <String, String>{};
+    final names = <String>{};
+    for (final line in _headers.text.split(RegExp(r'\r?\n'))) {
+      if (line.trim().isEmpty) continue;
+      final separator = line.indexOf(':');
+      if (separator <= 0) return null;
+      final name = line.substring(0, separator).trim();
+      final value = line.substring(separator + 1).trim();
+      if (!isValidMcpHeaderName(name) ||
+          value.contains('\r') ||
+          value.contains('\n') ||
+          !names.add(name.toLowerCase())) {
+        return null;
+      }
+      headers[name] = value;
+    }
+    if (headers.length > 32 ||
+        utf8.encode(jsonEncode(headers)).length > 16384) {
+      return null;
+    }
+    return headers;
   }
 
   void _save() {
     if (!_formKey.currentState!.validate()) return;
+    final parsedHeaders = _parseHeaders();
     final arguments = _arguments.text
         .split(RegExp(r'\r?\n'))
         .where((value) => value.trim().isNotEmpty)
         .map((value) => value.trim())
         .toList(growable: false);
+    final existing = widget.existing;
+    final headers =
+        _transport == McpTransportType.stdio || _clearSavedCredentials
+            ? const <String, String>{}
+            : _headers.text.trim().isEmpty && existing != null
+                ? existing.headers
+                : parsedHeaders ?? const <String, String>{};
     Navigator.of(context).pop(McpServerProfile(
-      id: 'mcp-${DateTime.now().microsecondsSinceEpoch}',
+      id: existing?.id ?? 'mcp-${DateTime.now().microsecondsSinceEpoch}',
       name: _name.text.trim(),
-      command: _command.text.trim(),
+      transport: _transport,
+      command: _transport == McpTransportType.stdio ? _command.text.trim() : '',
       arguments: arguments,
+      endpoint:
+          _transport == McpTransportType.stdio ? '' : _endpoint.text.trim(),
+      headers: headers,
+      savedHeaderNames: existing?.credentialHeaderNames ?? const [],
+      enabled: existing?.enabled ?? false,
     ));
   }
 
@@ -1396,7 +1486,8 @@ class _McpServerDialogState extends State<_McpServerDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       key: const Key('settings.mcp.add.dialog'),
-      title: const Text('Add local MCP server'),
+      title:
+          Text(widget.existing == null ? 'Add MCP server' : 'Edit MCP server'),
       content: SizedBox(
         width: 440,
         child: Form(
@@ -1405,9 +1496,16 @@ class _McpServerDialogState extends State<_McpServerDialog> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text(
-                  'This starts the executable directly with separate arguments. The app does not build a shell command. On Windows, .bat and .cmd launchers may still be handled by the system shell. Its tools are shown to the selected model and each call needs your approval.',
-                  style: TextStyle(color: AppColors.muted, fontSize: 12),
+                Text(
+                  switch (_transport) {
+                    McpTransportType.stdio =>
+                      'Starts the executable directly with separate arguments. The app does not assemble a shell command. Windows may still dispatch .bat and .cmd launchers through the system shell.',
+                    McpTransportType.http =>
+                      'Uses Streamable HTTP and falls back to legacy SSE when needed. Use HTTPS for remote servers; plain HTTP is allowed only on loopback addresses.',
+                    McpTransportType.sse =>
+                      'Connects to a legacy MCP HTTP+SSE server. Use HTTPS for remote servers; plain HTTP is allowed only on loopback addresses.',
+                  },
+                  style: const TextStyle(color: AppColors.muted, fontSize: 12),
                 ),
                 const SizedBox(height: 15),
                 TextFormField(
@@ -1420,39 +1518,110 @@ class _McpServerDialogState extends State<_McpServerDialog> {
                       value == null || value.trim().isEmpty ? 'Required' : null,
                 ),
                 const SizedBox(height: 10),
-                TextFormField(
-                  key: const Key('settings.mcp.command'),
-                  controller: _command,
-                  maxLength: 1024,
-                  decoration: const InputDecoration(
-                    labelText: 'Program or executable path',
-                    hintText: 'npx',
-                  ),
-                  validator: (value) =>
-                      value == null || value.trim().isEmpty ? 'Required' : null,
-                ),
-                const SizedBox(height: 10),
-                TextFormField(
-                  key: const Key('settings.mcp.arguments'),
-                  controller: _arguments,
-                  minLines: 2,
-                  maxLines: 5,
-                  maxLength: 16384,
-                  decoration: const InputDecoration(
-                    labelText: 'Arguments',
-                    hintText: '-y\n@vendor/server',
-                    helperText:
-                        'One argument per line; no shell command is assembled.',
-                  ),
-                  validator: (value) {
-                    final arguments = (value ?? '')
-                        .split(RegExp(r'\r?\n'))
-                        .where((argument) => argument.trim().isNotEmpty);
-                    return arguments.length > 64
-                        ? 'Use no more than 64 arguments.'
-                        : null;
+                DropdownButtonFormField<McpTransportType>(
+                  key: const Key('settings.mcp.transport'),
+                  initialValue: _transport,
+                  decoration: const InputDecoration(labelText: 'Transport'),
+                  items: const [
+                    DropdownMenuItem(
+                      value: McpTransportType.stdio,
+                      child: Text('Local command (stdio)'),
+                    ),
+                    DropdownMenuItem(
+                      value: McpTransportType.http,
+                      child: Text('HTTP (Streamable HTTP)'),
+                    ),
+                    DropdownMenuItem(
+                      value: McpTransportType.sse,
+                      child: Text('SSE (legacy)'),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setState(() => _transport = value);
                   },
                 ),
+                const SizedBox(height: 10),
+                if (_transport == McpTransportType.stdio) ...[
+                  TextFormField(
+                    key: const Key('settings.mcp.command'),
+                    controller: _command,
+                    maxLength: 1024,
+                    decoration: const InputDecoration(
+                      labelText: 'Program or executable path',
+                      hintText: 'npx',
+                    ),
+                    validator: (value) => value == null || value.trim().isEmpty
+                        ? 'Required'
+                        : null,
+                  ),
+                  const SizedBox(height: 10),
+                  TextFormField(
+                    key: const Key('settings.mcp.arguments'),
+                    controller: _arguments,
+                    minLines: 2,
+                    maxLines: 5,
+                    maxLength: 16384,
+                    decoration: const InputDecoration(
+                      labelText: 'Arguments',
+                      hintText: '-y\n@vendor/server',
+                      helperText:
+                          'One argument per line; no shell command is assembled.',
+                    ),
+                    validator: (value) {
+                      final arguments = (value ?? '')
+                          .split(RegExp(r'\r?\n'))
+                          .where((argument) => argument.trim().isNotEmpty);
+                      return arguments.length > 64
+                          ? 'Use no more than 64 arguments.'
+                          : null;
+                    },
+                  ),
+                ] else ...[
+                  TextFormField(
+                    key: const Key('settings.mcp.endpoint'),
+                    controller: _endpoint,
+                    maxLength: 2048,
+                    keyboardType: TextInputType.url,
+                    decoration: const InputDecoration(
+                      labelText: 'Server URL',
+                      hintText: 'https://example.com/mcp',
+                    ),
+                    validator: (value) =>
+                        isAllowedMcpEndpoint(value?.trim() ?? '')
+                            ? null
+                            : 'Use HTTPS, or HTTP on localhost / 127.0.0.1.',
+                  ),
+                  const SizedBox(height: 10),
+                  TextFormField(
+                    key: const Key('settings.mcp.headers'),
+                    controller: _headers,
+                    minLines: 2,
+                    maxLines: 4,
+                    maxLength: 16384,
+                    decoration: InputDecoration(
+                      labelText: 'Request headers',
+                      hintText: 'Authorization: Bearer token',
+                      helperText: widget.existing == null
+                          ? 'Optional. One header per line. Values are stored in the OS secure store.'
+                          : 'Leave blank to keep saved headers. New values replace them and stay in the OS secure store.',
+                    ),
+                    validator: (value) =>
+                        (value ?? '').trim().isEmpty || _parseHeaders() != null
+                            ? null
+                            : 'Use unique valid header names, one per line.',
+                  ),
+                  if (widget.existing?.credentialHeaderNames.isNotEmpty == true)
+                    CheckboxListTile(
+                      key: const Key('settings.mcp.clear_credentials'),
+                      contentPadding: EdgeInsets.zero,
+                      value: _clearSavedCredentials,
+                      onChanged: (value) => setState(
+                        () => _clearSavedCredentials = value ?? false,
+                      ),
+                      title: const Text('Clear saved request headers'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                ],
               ],
             ),
           ),
@@ -1466,7 +1635,7 @@ class _McpServerDialogState extends State<_McpServerDialog> {
         FilledButton(
           key: const Key('settings.mcp.add.save'),
           onPressed: _save,
-          child: const Text('Add server'),
+          child: Text(widget.existing == null ? 'Add server' : 'Save changes'),
         ),
       ],
     );
