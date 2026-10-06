@@ -36,6 +36,7 @@ class SettingsScreen extends StatelessWidget {
     required this.pastChatSearchEnabled,
     required this.autoRememberPreferences,
     required this.autoSelectSkills,
+    required this.skillLearningEnabled,
     required this.dataDirectoryPath,
     required this.isLocalDataReady,
     required this.onSaveUserProfile,
@@ -44,6 +45,7 @@ class SettingsScreen extends StatelessWidget {
     required this.onPastChatSearchEnabledChanged,
     required this.onAutoRememberChanged,
     required this.onAutoSelectSkillsChanged,
+    required this.onSkillLearningChanged,
     required this.skillsDirectoryPath,
     required this.mcpServers,
     required this.mcpServerStatuses,
@@ -79,6 +81,7 @@ class SettingsScreen extends StatelessWidget {
   final bool pastChatSearchEnabled;
   final bool autoRememberPreferences;
   final bool autoSelectSkills;
+  final bool skillLearningEnabled;
   final String? dataDirectoryPath;
   final bool isLocalDataReady;
   final Future<void> Function(String) onSaveUserProfile;
@@ -87,6 +90,7 @@ class SettingsScreen extends StatelessWidget {
   final ValueChanged<bool> onPastChatSearchEnabledChanged;
   final ValueChanged<bool> onAutoRememberChanged;
   final ValueChanged<bool> onAutoSelectSkillsChanged;
+  final ValueChanged<bool> onSkillLearningChanged;
   final String? skillsDirectoryPath;
   final List<McpServerProfile> mcpServers;
   final Map<String, McpServerStatus> mcpServerStatuses;
@@ -197,6 +201,7 @@ class SettingsScreen extends StatelessWidget {
           pastChatSearchEnabled: pastChatSearchEnabled,
           autoRememberPreferences: autoRememberPreferences,
           autoSelectSkills: autoSelectSkills,
+          skillLearningEnabled: skillLearningEnabled,
           dataDirectoryPath: dataDirectoryPath,
           isLocalDataReady: isLocalDataReady,
           skillsDirectoryPath: skillsDirectoryPath,
@@ -206,6 +211,7 @@ class SettingsScreen extends StatelessWidget {
           onPastChatSearchEnabledChanged: onPastChatSearchEnabledChanged,
           onAutoRememberChanged: onAutoRememberChanged,
           onAutoSelectSkillsChanged: onAutoSelectSkillsChanged,
+          onSkillLearningChanged: onSkillLearningChanged,
         ),
       SettingsTab.shortcuts => const _ShortcutSettings(),
     };
@@ -328,6 +334,7 @@ class _MemorySettings extends StatefulWidget {
     required this.pastChatSearchEnabled,
     required this.autoRememberPreferences,
     required this.autoSelectSkills,
+    required this.skillLearningEnabled,
     required this.dataDirectoryPath,
     required this.isLocalDataReady,
     required this.skillsDirectoryPath,
@@ -337,6 +344,7 @@ class _MemorySettings extends StatefulWidget {
     required this.onPastChatSearchEnabledChanged,
     required this.onAutoRememberChanged,
     required this.onAutoSelectSkillsChanged,
+    required this.onSkillLearningChanged,
   });
 
   final String userProfileText;
@@ -345,6 +353,7 @@ class _MemorySettings extends StatefulWidget {
   final bool pastChatSearchEnabled;
   final bool autoRememberPreferences;
   final bool autoSelectSkills;
+  final bool skillLearningEnabled;
   final String? dataDirectoryPath;
   final bool isLocalDataReady;
   final String? skillsDirectoryPath;
@@ -354,6 +363,7 @@ class _MemorySettings extends StatefulWidget {
   final ValueChanged<bool> onPastChatSearchEnabledChanged;
   final ValueChanged<bool> onAutoRememberChanged;
   final ValueChanged<bool> onAutoSelectSkillsChanged;
+  final ValueChanged<bool> onSkillLearningChanged;
 
   @override
   State<_MemorySettings> createState() => _MemorySettingsState();
@@ -543,6 +553,17 @@ class _MemorySettingsState extends State<_MemorySettings> {
                 onChanged: widget.isLocalDataReady
                     ? widget.onAutoSelectSkillsChanged
                     : null,
+              ),
+              const Divider(height: 1),
+              SwitchListTile.adaptive(
+                key: const Key('settings.memories.skillLearning'),
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Let the agent propose reusable skills'),
+                subtitle: const Text(
+                  'Off by default. Proposals stay pending until you review and approve them in Skills.',
+                ),
+                value: widget.skillLearningEnabled,
+                onChanged: widget.onSkillLearningChanged,
               ),
             ],
           ),

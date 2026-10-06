@@ -420,7 +420,7 @@ class AgentDataStore {
         (normalizedContent == null ||
             normalizedContent.isEmpty ||
             normalizedContent.length > maxMemoryEntryCharacters ||
-            _containsSensitiveValue(normalizedContent))) {
+            containsSensitiveValue(normalizedContent))) {
       return const AgentMemoryUpdateResult(
         success: false,
         message:
@@ -526,7 +526,7 @@ class AgentDataStore {
     );
   }
 
-  bool _containsSensitiveValue(String value) => RegExp(
+  static bool containsSensitiveValue(String value) => RegExp(
         r'(?:api[_ -]?key|password|passwd|secret|token|bearer\s+|sk-[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)',
         caseSensitive: false,
       ).hasMatch(value);

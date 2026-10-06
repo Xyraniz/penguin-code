@@ -11,6 +11,7 @@ import 'app_theme.dart';
 import 'models.dart';
 import 'services/agent_data_store.dart';
 import 'services/agent_memory_tool.dart';
+import 'services/bounded_parallel_runner.dart';
 import 'services/chat_history_search.dart';
 import 'services/chat_history_tool.dart';
 import 'services/task_progress_tool.dart';
@@ -20,6 +21,8 @@ import 'services/project_attachment_loader.dart';
 import 'services/project_instruction_repository.dart';
 import 'services/project_tool_executor.dart';
 import 'services/tool_call_loop_guard.dart';
+import 'services/skill_learning_repository.dart';
+import 'services/skill_learning_tool.dart';
 import 'services/bundled_skill_repository.dart';
 import 'services/skills_hub.dart';
 import 'services/mcp_stdio_client.dart';
@@ -185,6 +188,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       'penguin_code.auto_remember_preferences';
   static const _autoSelectSkillsPreferenceKey =
       'penguin_code.auto_select_skills';
+  static const _skillLearningEnabledPreferenceKey =
+      'penguin_code.skill_learning_enabled';
   static const _responseDetailPreferenceKey = 'penguin_code.response_detail';
   static const _reasoningSummaryPreferenceKey =
       'penguin_code.reasoning_summary';
@@ -221,6 +226,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final _outputExecutor = ChatOutputExecutor();
   final _projectInstructionRepository = ProjectInstructionRepository();
   final _skillRepository = BundledSkillRepository();
+  final _skillLearningRepository = SkillLearningRepository();
   final _skillsHubService = SkillsHubService();
   final _skillPreferences = SharedPreferencesAsync();
   late final McpCredentialStore _mcpCredentialStore =
@@ -245,13 +251,16 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   bool _pastChatSearchEnabled = false;
   bool _autoRememberPreferences = true;
   bool _autoSelectSkills = true;
+  bool _skillLearningEnabled = false;
   bool _subagentsEnabled = false;
   ResponseDetail _responseDetail = ResponseDetail.modelDefault;
   ReasoningSummary _reasoningSummary = ReasoningSummary.automatic;
   bool _localDataReady = false;
+  int _skillLearningPreferenceRevision = 0;
   String _userProfileText = '';
   String _agentMemoryText = '';
   List<AgentSkillProfile> _availableSkills = const [];
+  List<PendingSkillProposal> _pendingSkillProposals = const [];
 
   String get _combinedMemoryText => [
         _userProfileText.trim(),
@@ -431,6 +440,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   }
 
   Future<void> _initializeLocalData() async {
+    final skillLearningRevision = _skillLearningPreferenceRevision;
     try {
       await _dataStore.initialize();
       final userProfile = await _dataStore.readUserProfile();
@@ -444,6 +454,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           await _skillPreferences.getBool(_autoRememberPreferenceKey);
       final autoSelect =
           await _skillPreferences.getBool(_autoSelectSkillsPreferenceKey);
+      final skillLearningEnabled =
+          await _skillPreferences.getBool(_skillLearningEnabledPreferenceKey);
       if (!mounted) return;
       final interruptedSubagentIds = <String>[];
       setState(() {
@@ -453,6 +465,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         _pastChatSearchEnabled = pastChatSearchEnabled ?? false;
         _autoRememberPreferences = autoRemember ?? true;
         _autoSelectSkills = autoSelect ?? true;
+        if (_skillLearningPreferenceRevision == skillLearningRevision) {
+          _skillLearningEnabled = skillLearningEnabled ?? false;
+        }
         for (final saved in savedChats) {
           final savedTask = saved.agentTask;
           if (savedTask != null) {
@@ -505,6 +520,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         _scheduleChatSave(taskId);
       }
       await _refreshLocalSkills();
+      await _refreshPendingSkillProposals();
     } catch (_) {
       if (mounted) setState(() => _localDataReady = true);
     }
@@ -526,6 +542,61 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       });
     } catch (_) {
       if (mounted) setState(() => _availableSkills = const []);
+    }
+  }
+
+  Future<void> _refreshPendingSkillProposals() async {
+    try {
+      final proposals = await _skillLearningRepository.loadPending(
+        skillsDirectory: _dataStore.skillsDirectory,
+      );
+      if (mounted) setState(() => _pendingSkillProposals = proposals);
+    } on Object {
+      if (mounted) setState(() => _pendingSkillProposals = const []);
+    }
+  }
+
+  Future<bool> _reviewSkillProposal(
+    PendingSkillProposal proposal, {
+    required bool approve,
+  }) async {
+    if (!_localDataReady || _isUpdatingSkillLibrary) return false;
+    setState(() => _isUpdatingSkillLibrary = true);
+    try {
+      if (approve) {
+        await _skillLearningRepository.approve(
+          proposalId: proposal.id,
+          skillsDirectory: _dataStore.skillsDirectory,
+          installedSkills: _availableSkills,
+        );
+        await _refreshLocalSkills();
+      } else {
+        await _skillLearningRepository.reject(
+          proposalId: proposal.id,
+          skillsDirectory: _dataStore.skillsDirectory,
+        );
+      }
+      await _refreshPendingSkillProposals();
+      if (!mounted) return false;
+      setState(() => _isUpdatingSkillLibrary = false);
+      _showNotice(
+          approve ? 'Skill proposal approved.' : 'Skill proposal rejected.');
+      return true;
+    } on SkillLearningException catch (error) {
+      if (!mounted) return false;
+      setState(() => _isUpdatingSkillLibrary = false);
+      _showNotice(error.message);
+      return false;
+    } on FileSystemException {
+      if (!mounted) return false;
+      setState(() => _isUpdatingSkillLibrary = false);
+      _showNotice('Could not update the local skill library.');
+      return false;
+    } on Object {
+      if (!mounted) return false;
+      setState(() => _isUpdatingSkillLibrary = false);
+      _showNotice('The skill proposal could not be reviewed.');
+      return false;
     }
   }
 
@@ -634,6 +705,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     bool? memoriesEnabled,
     bool? autoRemember,
     bool? autoSelectSkills,
+    bool? skillLearningEnabled,
   }) async {
     try {
       if (memoriesEnabled != null) {
@@ -654,15 +726,25 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           autoSelectSkills,
         );
       }
+      if (skillLearningEnabled != null) {
+        await _skillPreferences.setBool(
+          _skillLearningEnabledPreferenceKey,
+          skillLearningEnabled,
+        );
+      }
     } catch (_) {
       if (mounted) _showNotice('Could not save this preference locally.');
       return;
     }
+    if (skillLearningEnabled != null) _skillLearningPreferenceRevision++;
     if (!mounted) return;
     setState(() {
       if (memoriesEnabled != null) _memoriesEnabled = memoriesEnabled;
       if (autoRemember != null) _autoRememberPreferences = autoRemember;
       if (autoSelectSkills != null) _autoSelectSkills = autoSelectSkills;
+      if (skillLearningEnabled != null) {
+        _skillLearningEnabled = skillLearningEnabled;
+      }
     });
   }
 
@@ -938,6 +1020,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   bool _requiresToolApproval(AgentPermissionMode mode, String toolName) {
     if (toolName == 'memory' ||
         toolName == 'search_past_chats' ||
+        toolName == skillLearningToolName ||
         toolName == taskProgressToolName) {
       return false;
     }
@@ -1695,6 +1778,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         final memoryToolAvailable = _memoriesEnabled &&
             !isPlanMode &&
             _selectedModelProfile?.supportsTools != false;
+        final skillLearningToolAvailable = _skillLearningEnabled &&
+            !isSubagent &&
+            !isPlanMode &&
+            _selectedModelProfile?.supportsTools != false;
         final chatHistoryToolAvailable = _pastChatSearchEnabled &&
             !isSubagent &&
             !isPlanMode &&
@@ -1723,6 +1810,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             if (chatHistoryToolAvailable) chatHistorySearchInstructions,
             if (taskProgressToolAvailable)
               taskProgressInstructions(conversation.taskProgress),
+            if (skillLearningToolAvailable)
+              skillLearningInstructions(_availableSkills),
           ].join('\n\n'),
           extraTools: [
             for (final tool in mcpAgentTools) tool.toOpenAiTool(),
@@ -1737,6 +1826,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             if (memoryToolAvailable) agentMemoryToolDefinition,
             if (chatHistoryToolAvailable) chatHistorySearchToolDefinition,
             if (taskProgressToolAvailable) taskProgressToolDefinition,
+            if (skillLearningToolAvailable) skillLearningToolDefinition,
           ],
         )) {
           if (!mounted) return;
@@ -1799,7 +1889,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                   (chatHistoryToolAvailable &&
                       scopedToolCall.name == 'search_past_chats') ||
                   (taskProgressToolAvailable &&
-                      scopedToolCall.name == taskProgressToolName)) {
+                      scopedToolCall.name == taskProgressToolName) ||
+                  (skillLearningToolAvailable &&
+                      scopedToolCall.name == skillLearningToolName)) {
                 toolCalls.add(scopedToolCall);
               } else if (!rejectedToolCall) {
                 rejectedToolCall = true;
@@ -1844,6 +1936,76 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         );
         history.add(assistantToolMessage);
 
+        final batchLoopDecisions = [
+          for (final toolCall in toolCalls) toolCallLoopGuard.inspect(toolCall),
+        ];
+        final parallelReadResults = List<Future<String>?>.filled(
+          toolCalls.length,
+          null,
+          growable: false,
+        );
+        const parallelSafeReadTools = {
+          'list_project_files',
+          'search_project_files',
+          'read_project_file',
+        };
+        final seenReadRequests = <String>{};
+        final independentReadCalls = toolCalls.every((call) {
+          final argumentKeys = call.arguments.keys.toList()..sort();
+          final fingerprint = jsonEncode([
+            call.name,
+            {for (final key in argumentKeys) key: call.arguments[key]},
+          ]);
+          return seenReadRequests.add(fingerprint);
+        });
+        final mayParallelizeReads = enableProjectTools &&
+            !isPlanMode &&
+            (permissionMode == AgentPermissionMode.autoApproveProjectReads ||
+                permissionMode == AgentPermissionMode.fullAccess) &&
+            completedToolCalls + toolCalls.length <= 8 &&
+            toolCalls.length > 1 &&
+            independentReadCalls &&
+            toolCalls.every((call) =>
+                parallelSafeReadTools.contains(call.name) &&
+                call.hasValidArguments) &&
+            batchLoopDecisions.every((decision) => !decision.blocked);
+        if (mayParallelizeReads) {
+          var instructionsAreLoaded = true;
+          for (final toolCall in toolCalls) {
+            final targetDirectory = _projectInstructionTargetDirectory(
+              toolCall,
+              projectRoot: effectiveProjectPath,
+            );
+            if (targetDirectory == null) continue;
+            final instructions =
+                await _projectInstructionRepository.loadForPath(
+              projectRoot: effectiveProjectPath,
+              targetDirectory: targetDirectory,
+            );
+            if (instructions.any((instruction) => !loadedProjectInstructionPaths
+                .contains(_instructionPathKey(instruction.path)))) {
+              instructionsAreLoaded = false;
+              break;
+            }
+          }
+          if (instructionsAreLoaded && !stop.isCompleted) {
+            final futures = runBoundedParallel(
+              toolCalls,
+              maxConcurrent: 3,
+              run: (call) => projectToolExecutor.execute(
+                projectPath: effectiveProjectPath,
+                call: call,
+                fullAccess: fullAccess,
+                allowComputerPaths: true,
+                abortTrigger: stop.future,
+              ),
+            );
+            for (var index = 0; index < futures.length; index++) {
+              parallelReadResults[index] = futures[index];
+            }
+          }
+        }
+
         final pendingSubagentResults = <({
           AgentTask task,
           ChatMessage action,
@@ -1851,10 +2013,11 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           Future<String> result
         })>[];
         var projectInstructionsDiscoveredThisRound = false;
-        for (final toolCall in toolCalls) {
+        for (var toolIndex = 0; toolIndex < toolCalls.length; toolIndex++) {
+          final toolCall = toolCalls[toolIndex];
           if (stop.isCompleted) return;
           completedToolCalls++;
-          final loopDecision = toolCallLoopGuard.inspect(toolCall);
+          final loopDecision = batchLoopDecisions[toolIndex];
           final isPlanSubmission = toolCall.name == 'submit_plan';
           final proposedPlan = toolCall.arguments['plan'];
           final validPlan = proposedPlan is String &&
@@ -2200,6 +2363,47 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                   ? 'No matching messages were found in saved conversations.'
                   : jsonEncode(matches);
               succeeded = true;
+            }
+            final completedAction = action.copyWith(
+              content: result,
+              status: ChatMessageStatus.complete,
+              toolActionStatus: succeeded
+                  ? ToolActionStatus.completed
+                  : ToolActionStatus.failed,
+            );
+            _updateChatMessage(chatId, action.id, (_) => completedAction);
+            history.add(completedAction);
+            continue;
+          }
+
+          if (toolCall.name == skillLearningToolName) {
+            String result;
+            var succeeded = false;
+            if (!skillLearningToolAvailable) {
+              result = 'Skill learning is unavailable for this response.';
+            } else if (loopDecision.blocked || completedToolCalls > 8) {
+              result = 'The skill proposal was blocked by the action limit.';
+            } else if (!toolCall.hasValidArguments) {
+              result = 'The skill proposal arguments were invalid.';
+            } else {
+              try {
+                await _refreshLocalSkills();
+                final proposal = await _skillLearningRepository.propose(
+                  arguments: toolCall.arguments,
+                  skillsDirectory: _dataStore.skillsDirectory,
+                  installedSkills: _availableSkills,
+                );
+                await _refreshPendingSkillProposals();
+                result =
+                    'Skill proposal ${proposal.id} is waiting for review in Skills. It has not been installed or activated.';
+                succeeded = true;
+              } on SkillLearningException catch (error) {
+                result = error.message;
+              } on FileSystemException {
+                result = 'Could not save the skill proposal locally.';
+              } on Object {
+                result = 'The skill proposal could not be saved.';
+              }
             }
             final completedAction = action.copyWith(
               content: result,
@@ -3364,6 +3568,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                       ),
                                   isLibraryReady: _skillLibraryReady,
                                   isUpdatingLibrary: _isUpdatingSkillLibrary,
+                                  pendingProposals: _pendingSkillProposals,
+                                  onReviewProposal: _reviewSkillProposal,
                                   onAddMaterial3: _addMaterial3Skill,
                                   onRemoveMaterial3: _removeMaterial3Skill,
                                   onUseMaterial3: _useMaterial3SkillInChat,
@@ -3422,6 +3628,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                   autoRememberPreferences:
                                       _autoRememberPreferences,
                                   autoSelectSkills: _autoSelectSkills,
+                                  skillLearningEnabled: _skillLearningEnabled,
                                   dataDirectoryPath: _dataStore.rootPath,
                                   isLocalDataReady: _localDataReady,
                                   onSaveUserProfile: _saveUserProfile,
@@ -3441,6 +3648,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                   onAutoSelectSkillsChanged: (enabled) =>
                                       unawaited(_setMemoryPreference(
                                     autoSelectSkills: enabled,
+                                  )),
+                                  onSkillLearningChanged: (enabled) =>
+                                      unawaited(_setMemoryPreference(
+                                    skillLearningEnabled: enabled,
                                   )),
                                   skillsDirectoryPath: _localDataReady
                                       ? _dataStore.skillsDirectory.path

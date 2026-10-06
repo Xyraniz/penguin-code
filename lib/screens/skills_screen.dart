@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models.dart';
+import '../services/skill_learning_repository.dart';
 import '../services/skills_hub.dart';
 import '../widgets/app_icons.dart';
 
@@ -14,6 +15,8 @@ class SkillsScreen extends StatefulWidget {
     required this.onAddMaterial3,
     required this.onRemoveMaterial3,
     required this.onUseMaterial3,
+    required this.pendingProposals,
+    required this.onReviewProposal,
     required this.localSkills,
     required this.activeSkillIds,
     required this.skillsDirectoryPath,
@@ -31,6 +34,11 @@ class SkillsScreen extends StatefulWidget {
   final Future<bool> Function() onAddMaterial3;
   final Future<bool> Function() onRemoveMaterial3;
   final VoidCallback onUseMaterial3;
+  final List<PendingSkillProposal> pendingProposals;
+  final Future<bool> Function(
+    PendingSkillProposal, {
+    required bool approve,
+  }) onReviewProposal;
   final List<AgentSkillProfile> localSkills;
   final Set<String> activeSkillIds;
   final String? skillsDirectoryPath;
@@ -112,6 +120,16 @@ class _SkillsScreenState extends State<SkillsScreen> {
         ),
       );
 
+  Future<void> _showPendingProposal(PendingSkillProposal proposal) =>
+      showDialog<void>(
+        context: context,
+        builder: (context) => _PendingSkillProposalDialog(
+          proposal: proposal,
+          isBusy: widget.isUpdatingLibrary,
+          onReview: widget.onReviewProposal,
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -139,6 +157,14 @@ class _SkillsScreenState extends State<SkillsScreen> {
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                   const SizedBox(height: 25),
+                  if (widget.pendingProposals.isNotEmpty) ...[
+                    _PendingSkillProposalSection(
+                      proposals: widget.pendingProposals,
+                      isBusy: widget.isUpdatingLibrary,
+                      onReview: _showPendingProposal,
+                    ),
+                    const SizedBox(height: 22),
+                  ],
                   Wrap(
                     spacing: 8,
                     children: [
@@ -237,6 +263,184 @@ class _SkillsScreenState extends State<SkillsScreen> {
       },
     );
   }
+}
+
+class _PendingSkillProposalSection extends StatelessWidget {
+  const _PendingSkillProposalSection({
+    required this.proposals,
+    required this.isBusy,
+    required this.onReview,
+  });
+
+  final List<PendingSkillProposal> proposals;
+  final bool isBusy;
+  final ValueChanged<PendingSkillProposal> onReview;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      key: const Key('skills.pendingProposals'),
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colors.secondaryContainer.withValues(alpha: 0.42),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: colors.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Skill proposals for review',
+              style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 5),
+          Text(
+            'The agent cannot install or activate these until you approve them.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 10),
+          for (final proposal in proposals)
+            ListTile(
+              key: Key('skills.pending.${proposal.id}'),
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                proposal.action == SkillProposalAction.create
+                    ? AppIcons.addRounded
+                    : AppIcons.editNoteRounded,
+                color: colors.primary,
+              ),
+              title: Text(proposal.name),
+              subtitle: Text(
+                '${proposal.action == SkillProposalAction.create ? 'New skill' : 'Skill update'} · ${proposal.description}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: TextButton(
+                key: Key('skills.pending.review.${proposal.id}'),
+                onPressed: isBusy ? null : () => onReview(proposal),
+                child: const Text('Review'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PendingSkillProposalDialog extends StatefulWidget {
+  const _PendingSkillProposalDialog({
+    required this.proposal,
+    required this.isBusy,
+    required this.onReview,
+  });
+
+  final PendingSkillProposal proposal;
+  final bool isBusy;
+  final Future<bool> Function(
+    PendingSkillProposal, {
+    required bool approve,
+  }) onReview;
+
+  @override
+  State<_PendingSkillProposalDialog> createState() =>
+      _PendingSkillProposalDialogState();
+}
+
+class _PendingSkillProposalDialogState
+    extends State<_PendingSkillProposalDialog> {
+  bool _working = false;
+
+  Future<void> _review(bool approve) async {
+    if (_working || widget.isBusy) return;
+    setState(() => _working = true);
+    final success = await widget.onReview(widget.proposal, approve: approve);
+    if (!mounted) return;
+    if (success) Navigator.pop(context);
+    setState(() => _working = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final proposal = widget.proposal;
+    final busy = _working || widget.isBusy;
+    return AlertDialog(
+      key: Key('skills.pending.preview.${proposal.id}'),
+      title: Text(proposal.name),
+      content: SizedBox(
+        width: 650,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '${proposal.action == SkillProposalAction.create ? 'New skill proposal' : 'Update to ${proposal.skillId}'} · ${proposal.description}',
+              ),
+              const SizedBox(height: 14),
+              if (proposal.baseContent != null) ...[
+                Text('Current instructions',
+                    style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 6),
+                _SkillTextPreview(
+                  key: const Key('skills.pending.currentContent'),
+                  value: proposal.baseContent!,
+                ),
+                const SizedBox(height: 14),
+              ],
+              Text('Proposed SKILL.md',
+                  style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 6),
+              _SkillTextPreview(
+                key: const Key('skills.pending.proposedContent'),
+                value: proposal.content,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Review the complete instructions before approving. This saves the skill but does not activate it for any chat.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          key: Key('skills.pending.reject.${proposal.id}'),
+          onPressed: busy ? null : () => _review(false),
+          child: const Text('Reject'),
+        ),
+        FilledButton(
+          key: Key('skills.pending.approve.${proposal.id}'),
+          onPressed: busy ? null : () => _review(true),
+          child: Text(busy ? 'Saving…' : 'Approve and save'),
+        ),
+      ],
+    );
+  }
+}
+
+class _SkillTextPreview extends StatelessWidget {
+  const _SkillTextPreview({super.key, required this.value});
+
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: double.infinity,
+        constraints: const BoxConstraints(maxHeight: 280),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(10),
+          border:
+              Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        ),
+        child: Scrollbar(
+          child: SingleChildScrollView(
+            child: SelectableText(value, style: const TextStyle(fontSize: 12)),
+          ),
+        ),
+      );
 }
 
 class _CommunitySkillsCatalog extends StatelessWidget {
@@ -567,71 +771,74 @@ class _LocalSkillsSectionState extends State<_LocalSkillsSection> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: colors.outlineVariant),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Your skills',
-                  style: Theme.of(context).textTheme.titleMedium,
+    return Material(
+      color: colors.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: colors.outlineVariant),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Your skills',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                 ),
-              ),
-              IconButton(
-                tooltip: 'Refresh local skills',
-                onPressed: _refreshing ? null : _refresh,
-                icon: _refreshing
-                    ? const SizedBox(
-                        width: 17,
-                        height: 17,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(AppIcons.refreshRounded, size: 18),
-              ),
+                IconButton(
+                  tooltip: 'Refresh local skills',
+                  onPressed: _refreshing ? null : _refresh,
+                  icon: _refreshing
+                      ? const SizedBox(
+                          width: 17,
+                          height: 17,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(AppIcons.refreshRounded, size: 18),
+                ),
+              ],
+            ),
+            Text(
+              widget.directoryPath == null
+                  ? 'Local skills are being prepared.'
+                  : 'Add a folder containing SKILL.md to ${widget.directoryPath}.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (widget.skills.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 13),
+                child: Text(
+                  'No custom skills found. Locally added skills are read as guidance; their scripts are never run.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                ),
+              )
+            else ...[
+              const SizedBox(height: 8),
+              for (final skill in widget.skills)
+                SwitchListTile.adaptive(
+                  key: Key('skills.local.${skill.id}'),
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(skill.name),
+                  subtitle: Text([
+                    skill.description,
+                    if (skill.source != null) skill.source!,
+                  ].join('\n')),
+                  value: widget.activeSkillIds.contains(skill.id),
+                  onChanged: (active) =>
+                      widget.onSkillActiveChanged(skill.id, active),
+                ),
             ],
-          ),
-          Text(
-            widget.directoryPath == null
-                ? 'Local skills are being prepared.'
-                : 'Add a folder containing SKILL.md to ${widget.directoryPath}.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          if (widget.skills.isEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 13),
-              child: Text(
-                'No custom skills found. Locally added skills are read as guidance; their scripts are never run.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: colors.onSurfaceVariant,
-                    ),
-              ),
-            )
-          else ...[
-            const SizedBox(height: 8),
-            for (final skill in widget.skills)
-              SwitchListTile.adaptive(
-                key: Key('skills.local.${skill.id}'),
-                contentPadding: EdgeInsets.zero,
-                title: Text(skill.name),
-                subtitle: Text([
-                  skill.description,
-                  if (skill.source != null) skill.source!,
-                ].join('\n')),
-                value: widget.activeSkillIds.contains(skill.id),
-                onChanged: (active) =>
-                    widget.onSkillActiveChanged(skill.id, active),
-              ),
           ],
-        ],
+        ),
       ),
     );
   }

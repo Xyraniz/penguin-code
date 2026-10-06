@@ -38,6 +38,8 @@ void main() {
           onAddMaterial3: () async => true,
           onRemoveMaterial3: () async => true,
           onUseMaterial3: () {},
+          pendingProposals: const [],
+          onReviewProposal: (_, {required approve}) async => true,
           localSkills: const [],
           activeSkillIds: const {},
           skillsDirectoryPath: r'C:\Users\Test\Documents\Penguin-code\Skills',

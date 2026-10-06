@@ -71,6 +71,140 @@ void main() {
     expect(find.byKey(const Key('sidebar.panel')), findsOneWidget);
   });
 
+  testWidgets('keeps skill learning opt-in and requires review to install', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requests.add(
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+        );
+        final response = responseIndex++ == 0
+            ? _sseToolCall(
+                name: 'propose_skill_change',
+                id: 'propose-review-skill',
+                arguments: jsonEncode({
+                  'action': 'create',
+                  'name': 'Review checklist',
+                  'description':
+                      'Review implementation changes before delivery.',
+                  'procedure':
+                      'Read the changed code. Run relevant checks. Report concrete findings and unresolved risks.',
+                }),
+              )
+            : _sseChunk('I drafted a reusable skill for review.');
+        return _chatResponse('$response\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(_testApp(chatClient: client));
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Memories'));
+    await tester.pumpAndSettle();
+    final skillLearningToggle = find.byKey(
+      const Key('settings.memories.skillLearning'),
+    );
+    await tester.ensureVisible(skillLearningToggle);
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 150)),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(skillLearningToggle).value, isFalse);
+    expect(
+      tester.widget<SwitchListTile>(skillLearningToggle).onChanged,
+      isNotNull,
+    );
+
+    await tester.tap(skillLearningToggle);
+    await tester.pumpAndSettle();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    expect(tester.widget<SwitchListTile>(skillLearningToggle).value, isTrue);
+    expect(
+      await tester.runAsync(
+        () => SharedPreferencesAsync().getBool(
+          'penguin_code.skill_learning_enabled',
+        ),
+      ),
+      isTrue,
+    );
+
+    await _createNewChat(tester);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Please capture the reusable review process from this task.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    for (var attempt = 0; attempt < 80 && requests.length < 2; attempt++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+    expect(
+      requests,
+      hasLength(2),
+      reason:
+          'visible text: ${find.byType(Text).evaluate().map((element) => (element.widget as Text).data).toList()}',
+    );
+
+    final toolNames = (requests.first['tools'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map((tool) =>
+            (tool['function'] as Map<String, dynamic>)['name'] as String)
+        .toSet();
+    expect(toolNames, contains('propose_skill_change'));
+    final toolResult = (requests[1]['messages'] as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .lastWhere((message) => message['role'] == 'tool');
+    expect(toolResult['content'], contains('waiting for review in Skills'));
+
+    await tester.tap(find.byKey(const Key('sidebar.skills')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('skills.pendingProposals')), findsOneWidget);
+    final reviewButton = find.byWidgetPredicate((widget) {
+      final key = widget.key;
+      return key is ValueKey<String> &&
+          key.value.startsWith('skills.pending.review.');
+    });
+    await tester.ensureVisible(reviewButton);
+    await tester.tap(reviewButton);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('skills.pending.proposedContent')),
+        findsOneWidget);
+    final approveButton = find.byWidgetPredicate((widget) {
+      final key = widget.key;
+      return key is ValueKey<String> &&
+          key.value.startsWith('skills.pending.approve.');
+    });
+    await tester.tap(approveButton);
+    for (var attempt = 0;
+        attempt < 80 && approveButton.evaluate().isNotEmpty;
+        attempt++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+
+    final installedSkill = File(
+      '${testDocumentsDirectory.path}${Platform.pathSeparator}Penguin-code'
+      '${Platform.pathSeparator}Skills${Platform.pathSeparator}review-checklist'
+      '${Platform.pathSeparator}SKILL.md',
+    );
+    expect(await tester.runAsync(installedSkill.exists), isTrue);
+    expect(await tester.runAsync(installedSkill.readAsString),
+        contains('Report concrete findings'));
+    expect(find.byKey(const Key('skills.pendingProposals')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('opens conversation history as a drawer in a compact window', (
     tester,
   ) async {
@@ -283,6 +417,99 @@ void main() {
       find.byKey(const Key('chat.tool.approve.full-access-command')),
       findsNothing,
     );
+  });
+
+  testWidgets('runs independent auto-approved reads and keeps result order', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final projectDirectory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('penguin-parallel-reads-'),
+    ))!;
+    addTearDown(
+      () => tester.runAsync(() => projectDirectory.delete(recursive: true)),
+    );
+    await tester.runAsync(() async {
+      await File('${projectDirectory.path}/alpha.txt')
+          .writeAsString('first file');
+      await File('${projectDirectory.path}/beta.txt')
+          .writeAsString('needle in second file');
+    });
+    final project = Project(
+      id: 'parallel-read-project',
+      name: 'Parallel read project',
+      path: projectDirectory.path,
+    );
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requests.add(
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+        );
+        final body = responseIndex++ == 0
+            ? _sseToolCalls([
+                {
+                  'id': 'parallel-list',
+                  'name': 'list_project_files',
+                  'arguments': '{}',
+                },
+                {
+                  'id': 'parallel-read',
+                  'name': 'read_project_file',
+                  'arguments': '{"path":"alpha.txt"}',
+                },
+                {
+                  'id': 'parallel-search',
+                  'name': 'search_project_files',
+                  'arguments': '{"query":"needle"}',
+                },
+              ])
+            : _sseChunk('Parallel reads finished.');
+        return _chatResponse('$body\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(
+      _testApp(initialProjects: [project], chatClient: client),
+    );
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+    await _startProjectChatFor(tester, project.id);
+    await tester.tap(find.byKey(const Key('project.access.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('project.access.option.autoApproveProjectReads')),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Read these project files.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    for (var attempt = 0;
+        attempt < 80 && find.text('Completed').evaluate().length < 3;
+        attempt++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+    expect(find.text('Completed'), findsNWidgets(3));
+
+    expect(requests, hasLength(2));
+    final results = (requests[1]['messages'] as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .where((message) => message['role'] == 'tool')
+        .toList();
+    expect(results, hasLength(3));
+    expect(results.map((message) => message['tool_call_id']), [
+      'parallel-list',
+      'parallel-read',
+      'parallel-search',
+    ]);
+    expect(results[0]['content'], contains('alpha.txt'));
+    expect(results[1]['content'], contains('first file'));
+    expect(results[2]['content'], contains('beta.txt'));
   });
 
   testWidgets(
@@ -2537,6 +2764,26 @@ String _sseToolCall({
                       'arguments': arguments,
                     },
                   },
+                ],
+              },
+            },
+          ],
+        })}\n\n';
+
+String _sseToolCalls(List<Map<String, String>> calls) => 'data: ${jsonEncode({
+          'choices': [
+            {
+              'delta': {
+                'tool_calls': [
+                  for (var index = 0; index < calls.length; index++)
+                    {
+                      'index': index,
+                      'id': calls[index]['id'],
+                      'function': {
+                        'name': calls[index]['name'],
+                        'arguments': calls[index]['arguments'],
+                      },
+                    },
                 ],
               },
             },
