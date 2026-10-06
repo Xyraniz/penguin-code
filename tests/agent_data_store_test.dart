@@ -112,6 +112,12 @@ void main() {
           status: ChatTaskStatus.inProgress,
         ),
       ],
+      goal: const ChatGoal(
+        objective: 'All focused tests pass',
+        status: ChatGoalStatus.paused,
+        evaluatedTurns: 2,
+        lastReason: 'One test still fails.',
+      ),
     );
     final task = AgentTask(
       id: conversation.id,
@@ -165,6 +171,10 @@ void main() {
           .map((item) => (item.content, item.status))
           .toList(),
     );
+    expect(saved.single.conversation.goal?.objective, 'All focused tests pass');
+    expect(saved.single.conversation.goal?.status, ChatGoalStatus.paused);
+    expect(saved.single.conversation.goal?.evaluatedTurns, 2);
+    expect(saved.single.conversation.goal?.lastReason, 'One test still fails.');
     expect(saved.single.messages.map((message) => message.content), [
       'Review project security',
       'I found an expired token check.',

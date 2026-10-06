@@ -146,12 +146,14 @@ class OpenAiCompatibleChatClient {
     required List<ChatMessage> history,
     required Future<void> abortTrigger,
     String? reasoningEffort,
+    String? skillInstructions,
   }) async* {
     await for (final event in streamEvents(
       provider: provider,
       history: history,
       abortTrigger: abortTrigger,
       reasoningEffort: reasoningEffort,
+      skillInstructions: skillInstructions,
     )) {
       if (event case ChatTextEvent(:final text)) yield text;
     }

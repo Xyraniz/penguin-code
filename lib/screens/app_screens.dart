@@ -18,6 +18,7 @@ class ChatScreen extends StatefulWidget {
     required this.hasModel,
     required this.messages,
     required this.taskProgress,
+    required this.goal,
     required this.isGenerating,
     required this.providerLabel,
     required this.permissionMode,
@@ -53,6 +54,7 @@ class ChatScreen extends StatefulWidget {
   final bool hasModel;
   final List<ChatMessage> messages;
   final List<ChatTaskItem> taskProgress;
+  final ChatGoal? goal;
   final bool isGenerating;
   final String? providerLabel;
   final AgentPermissionMode permissionMode;
@@ -204,6 +206,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 _MessageTimeline(
                   messages: widget.messages,
                   taskProgress: widget.taskProgress,
+                  goal: widget.goal,
                   onRetry: widget.onRetry,
                   onApproveTool: widget.onApproveTool,
                   onDenyTool: widget.onDenyTool,
@@ -1064,6 +1067,7 @@ class _MessageTimeline extends StatefulWidget {
   const _MessageTimeline({
     required this.messages,
     required this.taskProgress,
+    required this.goal,
     required this.onRetry,
     required this.onApproveTool,
     required this.onDenyTool,
@@ -1074,6 +1078,7 @@ class _MessageTimeline extends StatefulWidget {
 
   final List<ChatMessage> messages;
   final List<ChatTaskItem> taskProgress;
+  final ChatGoal? goal;
   final ValueChanged<String> onRetry;
   final ValueChanged<String> onApproveTool;
   final ValueChanged<String> onDenyTool;
@@ -1117,17 +1122,27 @@ class _MessageTimelineState extends State<_MessageTimeline> {
           key: const Key('chat.messages'),
           controller: _scrollController,
           padding: const EdgeInsets.fromLTRB(24, 26, 24, 32),
-          itemCount:
-              widget.messages.length + (widget.taskProgress.isEmpty ? 0 : 1),
+          itemCount: widget.messages.length +
+              (widget.taskProgress.isEmpty ? 0 : 1) +
+              (widget.goal == null ? 0 : 1),
           separatorBuilder: (context, index) => const SizedBox(height: 18),
           itemBuilder: (context, index) {
-            if (widget.taskProgress.isNotEmpty && index == 0) {
+            if (widget.goal != null && index == 0) {
+              return _GoalCard(
+                goal: widget.goal!,
+                key: const Key('chat.goal-card'),
+              );
+            }
+            final progressIndex = widget.goal == null ? 0 : 1;
+            if (widget.taskProgress.isNotEmpty && index == progressIndex) {
               return _TaskProgressCard(
                 todos: widget.taskProgress,
                 key: const Key('chat.task-progress'),
               );
             }
-            final messageIndex = index - (widget.taskProgress.isEmpty ? 0 : 1);
+            final messageIndex = index -
+                (widget.goal == null ? 0 : 1) -
+                (widget.taskProgress.isEmpty ? 0 : 1);
             final message = widget.messages[messageIndex];
             if (message.role == ChatMessageRole.tool) {
               return _ToolActionCard(
@@ -1268,6 +1283,61 @@ class _MessageTimelineState extends State<_MessageTimeline> {
               ),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _GoalCard extends StatelessWidget {
+  const _GoalCard({super.key, required this.goal});
+
+  final ChatGoal goal;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final status = switch (goal.status) {
+      ChatGoalStatus.active => 'Active',
+      ChatGoalStatus.paused => 'Paused',
+      ChatGoalStatus.achieved => 'Achieved',
+      ChatGoalStatus.impossible => 'Unable to complete',
+    };
+    return Card(
+      color: colors.surfaceContainerLow,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(AppIcons.flagOutlined, size: 17, color: colors.primary),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Goal',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                ),
+                Text(
+                  '$status · ${goal.evaluatedTurns}/6 checks',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(goal.objective, style: Theme.of(context).textTheme.bodySmall),
+            if (goal.lastReason.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                goal.lastReason,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+              ),
+            ],
+          ],
         ),
       ),
     );

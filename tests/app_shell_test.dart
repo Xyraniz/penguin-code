@@ -2691,6 +2691,79 @@ void main() {
     expect(requestBody.containsKey('verbosity'), isFalse);
     expect(requestBody.containsKey('reasoning'), isFalse);
   });
+
+  testWidgets('runs a bounded goal through evaluation and continuation', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final responses = [
+      _sseChunk('The first run found one test that still needs attention.'),
+      _sseChunk(
+        'VERDICT: not_yet_met\nREASON: One test still needs to be run.',
+      ),
+      _sseChunk('All widget tests passed with exit code 0.'),
+      _sseChunk('VERDICT: met\nREASON: The test run returned exit code 0.'),
+    ];
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        requests.add(
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
+        );
+        return _chatResponse('${responses[responseIndex++]}data: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(_testApp(chatClient: client));
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      '/goal all widget tests pass',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    for (var attempt = 0; attempt < 160 && requests.length < 4; attempt++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+    await tester.pumpAndSettle();
+
+    expect(requests, hasLength(4));
+    final initialMessages = requests.first['messages'] as List<dynamic>;
+    expect(initialMessages.last['content'], 'all widget tests pass');
+    expect(initialMessages.first['content'],
+        contains('Active goal for this chat'));
+    expect(requests[1].containsKey('tools'), isFalse);
+    final continuationMessages = requests[2]['messages'] as List<dynamic>;
+    expect(continuationMessages.last['content'],
+        contains('Continue working toward the active goal'));
+    final goalCheckMessages = requests[3]['messages'] as List<dynamic>;
+    expect(
+        goalCheckMessages.first['content'], contains('completion evaluator'));
+    expect(find.byKey(const Key('chat.goal-card')), findsOneWidget);
+    expect(find.text('Achieved · 2/6 checks'), findsOneWidget);
+    expect(find.textContaining('Goal achieved:'), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('composer.input')), '/goal');
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Goal achieved (2/6 checks)'), findsOneWidget);
+    expect(requests, hasLength(4));
+
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      '/goal clear',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('chat.goal-card')), findsNothing);
+    expect(find.textContaining('Goal cleared:'), findsOneWidget);
+    expect(requests, hasLength(4));
+    expect(tester.takeException(), isNull);
+  });
 }
 
 PenguinCodeApp _testApp({

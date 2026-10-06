@@ -22,6 +22,7 @@ Penguin Code is an early native desktop prototype with a working text chat for O
 - Streaming chat composer with stop and retry controls
 - Automatic conversation-context compaction for long tasks, with the complete transcript preserved locally
 - Automatic, saved task-progress checklists for multi-step chats and subagents
+- Per-chat `/goal` completion conditions with automatic evaluation and bounded continuation
 - Source and text file attachments from any folder
 - Computer access selector with chat-only, per-action approval, automatic read, and full access modes
 - OpenAI-compatible tool calling for listing, searching, reading, and editing files across computer folders
@@ -75,6 +76,10 @@ Subagents are optional and off by default. Turn them on in **Settings → Genera
 Open **Settings → Agent hooks** to configure local automations and recovery. Hooks are off by default; enable both the master switch and each hook you want to run. Before-tool commands receive event JSON on standard input. Exit code `2` blocks the action, and a timeout also blocks it; a hook cannot grant computer access or bypass the selected approval mode. After-tool output is returned to the model as context. Agent-finished hooks can run local notifications or other commands when a response ends. Hooks support PowerShell on Windows and the default shell on macOS and Linux, run with your account permissions, and have a configurable timeout and bounded event output. Keep secrets out of hook commands and scripts.
 
 Automatic checkpoints are separately opt-in and default to off. Penguin Code saves a file checkpoint before built-in text edits and generated outputs, and a working-folder checkpoint before shell commands. Data is stored under `Documents/Penguin-code/Checkpoints`, outside the project `.git` directory. Shell checkpoints cover the command's working folder; they skip common build/dependency folders and symbolic links, and stop before an action if the 10,000-file or 250 MiB limit is exceeded. Individual files are limited to 50 MiB. Settings lists checkpoints for review, previews text changes, restores changed files, and keeps later edits when a file no longer matches the state the agent left behind. Pending checkpoints from an interrupted action require an explicit restore confirmation. MCP and other external side effects cannot be reversed by filesystem checkpoints.
+
+## Goal commands
+
+Enter `/goal <completion condition>` in a chat to start work toward a verifiable end state. Penguin Code checks each completed response with the selected provider and continues when the condition is not yet met. Automatic continuation pauses after up to six evaluated turns; `/goal resume` starts a fresh bounded run. Use `/goal` to inspect the goal, `/goal edit <condition>` to replace it, `/goal pause` to pause it, and `/goal clear` to remove it. The selected model also performs completion checks, so no evaluator model or extra provider setup is required. Goal commands are handled by the app and do not change the selected computer-access or approval mode.
 
 ## Configure a provider
 

@@ -563,6 +563,7 @@ class AgentDataStore {
         'taskProgress': conversation.taskProgress
             .map((item) => item.toJson())
             .toList(growable: false),
+        if (conversation.goal != null) 'goal': conversation.goal!.toJson(),
       };
 
   ChatConversation _conversationFromJson(Map<String, dynamic> json) {
@@ -607,6 +608,7 @@ class AgentDataStore {
           .whereType<ChatTaskItem>()
           .take(24)
           .toList(growable: false),
+      goal: ChatGoal.fromJson(json['goal']),
     );
   }
 

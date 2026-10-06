@@ -10,6 +10,8 @@ enum AgentTaskStatus { queued, running, completed, failed, stopped }
 
 enum ChatTaskStatus { pending, inProgress, completed }
 
+enum ChatGoalStatus { active, paused, achieved, impossible }
+
 enum McpTransportType { stdio, http, sse }
 
 enum AgentHookEvent { beforeTool, afterTool, agentFinished }
@@ -715,6 +717,69 @@ class ChatTaskItem {
   }
 }
 
+class ChatGoal {
+  const ChatGoal({
+    required this.objective,
+    this.status = ChatGoalStatus.active,
+    this.evaluatedTurns = 0,
+    this.lastReason = '',
+  });
+
+  final String objective;
+  final ChatGoalStatus status;
+  final int evaluatedTurns;
+  final String lastReason;
+
+  ChatGoal copyWith({
+    String? objective,
+    ChatGoalStatus? status,
+    int? evaluatedTurns,
+    String? lastReason,
+  }) =>
+      ChatGoal(
+        objective: objective ?? this.objective,
+        status: status ?? this.status,
+        evaluatedTurns: evaluatedTurns ?? this.evaluatedTurns,
+        lastReason: lastReason ?? this.lastReason,
+      );
+
+  Map<String, Object?> toJson() => {
+        'objective': objective,
+        'status': status.name,
+        'evaluatedTurns': evaluatedTurns,
+        'lastReason': lastReason,
+      };
+
+  static ChatGoal? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final objective = value['objective'];
+    if (objective is! String ||
+        objective.trim().isEmpty ||
+        objective.length > 4000) {
+      return null;
+    }
+    final status = switch (value['status']) {
+      'active' => ChatGoalStatus.active,
+      'paused' => ChatGoalStatus.paused,
+      'achieved' => ChatGoalStatus.achieved,
+      'impossible' => ChatGoalStatus.impossible,
+      _ => null,
+    };
+    if (status == null) return null;
+    final evaluatedTurns = value['evaluatedTurns'];
+    final lastReason = value['lastReason'];
+    return ChatGoal(
+      objective: objective.trim(),
+      status: status,
+      evaluatedTurns:
+          evaluatedTurns is int ? evaluatedTurns.clamp(0, 10000) : 0,
+      lastReason: lastReason is String
+          ? lastReason.substring(0, lastReason.length.clamp(0, 1200).toInt())
+          : '',
+    );
+  }
+}
+
 class Project {
   const Project({required this.id, required this.name, required this.path});
 
@@ -735,6 +800,7 @@ class ChatConversation {
     this.contextSummary = '',
     this.contextSummaryThroughMessageId,
     this.taskProgress = const [],
+    this.goal,
   });
 
   final String id;
@@ -747,6 +813,7 @@ class ChatConversation {
   final String contextSummary;
   final String? contextSummaryThroughMessageId;
   final List<ChatTaskItem> taskProgress;
+  final ChatGoal? goal;
 
   ChatConversation copyWith({
     String? title,
@@ -756,7 +823,9 @@ class ChatConversation {
     String? contextSummary,
     String? contextSummaryThroughMessageId,
     List<ChatTaskItem>? taskProgress,
+    ChatGoal? goal,
     bool clearContextSummary = false,
+    bool clearGoal = false,
   }) =>
       ChatConversation(
         id: id,
@@ -773,5 +842,6 @@ class ChatConversation {
             : contextSummaryThroughMessageId ??
                 this.contextSummaryThroughMessageId,
         taskProgress: taskProgress ?? this.taskProgress,
+        goal: clearGoal ? null : goal ?? this.goal,
       );
 }
