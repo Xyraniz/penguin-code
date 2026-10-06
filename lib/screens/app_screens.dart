@@ -17,6 +17,7 @@ class ChatScreen extends StatefulWidget {
     required this.outputDirectoryPath,
     required this.hasModel,
     required this.messages,
+    required this.taskProgress,
     required this.isGenerating,
     required this.providerLabel,
     required this.permissionMode,
@@ -51,6 +52,7 @@ class ChatScreen extends StatefulWidget {
   final String? outputDirectoryPath;
   final bool hasModel;
   final List<ChatMessage> messages;
+  final List<ChatTaskItem> taskProgress;
   final bool isGenerating;
   final String? providerLabel;
   final AgentPermissionMode permissionMode;
@@ -201,6 +203,7 @@ class _ChatScreenState extends State<ChatScreen> {
               else if (widget.messages.isNotEmpty)
                 _MessageTimeline(
                   messages: widget.messages,
+                  taskProgress: widget.taskProgress,
                   onRetry: widget.onRetry,
                   onApproveTool: widget.onApproveTool,
                   onDenyTool: widget.onDenyTool,
@@ -1060,6 +1063,7 @@ String _composerAccessLabel(AgentPermissionMode mode) =>
 class _MessageTimeline extends StatefulWidget {
   const _MessageTimeline({
     required this.messages,
+    required this.taskProgress,
     required this.onRetry,
     required this.onApproveTool,
     required this.onDenyTool,
@@ -1069,6 +1073,7 @@ class _MessageTimeline extends StatefulWidget {
   });
 
   final List<ChatMessage> messages;
+  final List<ChatTaskItem> taskProgress;
   final ValueChanged<String> onRetry;
   final ValueChanged<String> onApproveTool;
   final ValueChanged<String> onDenyTool;
@@ -1112,10 +1117,18 @@ class _MessageTimelineState extends State<_MessageTimeline> {
           key: const Key('chat.messages'),
           controller: _scrollController,
           padding: const EdgeInsets.fromLTRB(24, 26, 24, 32),
-          itemCount: widget.messages.length,
+          itemCount:
+              widget.messages.length + (widget.taskProgress.isEmpty ? 0 : 1),
           separatorBuilder: (context, index) => const SizedBox(height: 18),
           itemBuilder: (context, index) {
-            final message = widget.messages[index];
+            if (widget.taskProgress.isNotEmpty && index == 0) {
+              return _TaskProgressCard(
+                todos: widget.taskProgress,
+                key: const Key('chat.task-progress'),
+              );
+            }
+            final messageIndex = index - (widget.taskProgress.isEmpty ? 0 : 1);
+            final message = widget.messages[messageIndex];
             if (message.role == ChatMessageRole.tool) {
               return _ToolActionCard(
                 message: message,
@@ -1261,6 +1274,84 @@ class _MessageTimelineState extends State<_MessageTimeline> {
   }
 }
 
+class _TaskProgressCard extends StatelessWidget {
+  const _TaskProgressCard({super.key, required this.todos});
+
+  final List<ChatTaskItem> todos;
+
+  @override
+  Widget build(BuildContext context) {
+    final completed =
+        todos.where((todo) => todo.status == ChatTaskStatus.completed).length;
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      color: colors.surfaceContainerLow,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(AppIcons.differenceOutlined,
+                    size: 17, color: colors.primary),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Task progress',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                ),
+                Text(
+                  '$completed of ${todos.length} completed',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            for (final todo in todos)
+              Padding(
+                padding: const EdgeInsets.only(top: 5),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      switch (todo.status) {
+                        ChatTaskStatus.pending =>
+                          AppIcons.hourglassEmptyRounded,
+                        ChatTaskStatus.inProgress => AppIcons.refreshRounded,
+                        ChatTaskStatus.completed => AppIcons.checkRounded,
+                      },
+                      size: 16,
+                      color: todo.status == ChatTaskStatus.completed
+                          ? colors.primary
+                          : colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        todo.content,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: todo.status == ChatTaskStatus.completed
+                                  ? colors.onSurfaceVariant
+                                  : colors.onSurface,
+                              decoration:
+                                  todo.status == ChatTaskStatus.completed
+                                      ? TextDecoration.lineThrough
+                                      : null,
+                            ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ToolActionCard extends StatelessWidget {
   const _ToolActionCard({
     required this.message,
@@ -1300,6 +1391,7 @@ class _ToolActionCard extends StatelessWidget {
             'list_project_files' => 'List computer files',
             'search_project_files' => 'Search computer files',
             'search_past_chats' => 'Search past chats',
+            'update_task_progress' => 'Update task progress',
             'read_project_file' => 'Read a file',
             'edit_project_file' => 'Edit a file',
             'run_command' => 'Run a command',
@@ -1317,6 +1409,7 @@ class _ToolActionCard extends StatelessWidget {
       'list_project_files' => AppIcons.folderOpenRounded,
       'search_project_files' => AppIcons.searchRounded,
       'search_past_chats' => AppIcons.searchRounded,
+      'update_task_progress' => AppIcons.differenceOutlined,
       'run_command' => AppIcons.terminalRounded,
       'delegate_task' => AppIcons.hubOutlined,
       _ when isMcpTool => AppIcons.hubOutlined,
@@ -1329,9 +1422,11 @@ class _ToolActionCard extends StatelessWidget {
           ? 'Running command'
           : message.toolName == 'search_past_chats'
               ? 'Searching past chats'
-              : isMcpTool
-                  ? 'Running MCP tool'
-                  : 'Working',
+              : message.toolName == 'update_task_progress'
+                  ? 'Updating task progress'
+                  : isMcpTool
+                      ? 'Running MCP tool'
+                      : 'Working',
       ToolActionStatus.completed => 'Completed',
       ToolActionStatus.planApproved => 'Plan approved',
       ToolActionStatus.planRevisionRequested => 'Plan revision requested',
@@ -1752,6 +1847,7 @@ class AgentsScreen extends StatefulWidget {
     required this.hasProvider,
     required this.tasks,
     required this.taskMessages,
+    required this.taskProgressById,
     required this.onAddTask,
     required this.onContinueTask,
     required this.onOpenSettings,
@@ -1767,6 +1863,7 @@ class AgentsScreen extends StatefulWidget {
   final bool hasProvider;
   final List<AgentTask> tasks;
   final Map<String, List<ChatMessage>> taskMessages;
+  final Map<String, List<ChatTaskItem>> taskProgressById;
   final ValueChanged<String> onAddTask;
   final void Function(String taskId, String prompt) onContinueTask;
   final VoidCallback onOpenSettings;
@@ -2008,6 +2105,15 @@ class _AgentsScreenState extends State<AgentsScreen> {
                               onApprovePlan: widget.onApprovePlan,
                               onKeepPlanning: widget.onKeepPlanning,
                               onCancelPlan: widget.onCancelPlan,
+                            ),
+                          ],
+                          if ((widget.taskProgressById[task.id] ??
+                                  const <ChatTaskItem>[])
+                              .isNotEmpty) ...[
+                            const SizedBox(height: 10),
+                            _TaskProgressCard(
+                              todos: widget.taskProgressById[task.id]!,
+                              key: Key('agents.task-progress.${task.id}'),
                             ),
                           ],
                         ],

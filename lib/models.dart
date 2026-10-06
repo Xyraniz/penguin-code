@@ -8,6 +8,8 @@ enum ReasoningSummary { automatic, concise, detailed, none }
 
 enum AgentTaskStatus { queued, running, completed, failed, stopped }
 
+enum ChatTaskStatus { pending, inProgress, completed }
+
 enum McpTransportType { stdio, http, sse }
 
 class McpServerProfile {
@@ -564,6 +566,7 @@ class AgentSkillProfile {
     required this.triggerText,
     required this.isBundled,
     this.directoryPath,
+    this.source,
   });
 
   final String id;
@@ -572,6 +575,40 @@ class AgentSkillProfile {
   final String triggerText;
   final bool isBundled;
   final String? directoryPath;
+  final String? source;
+}
+
+class ChatTaskItem {
+  const ChatTaskItem({required this.content, required this.status});
+
+  final String content;
+  final ChatTaskStatus status;
+
+  Map<String, Object?> toJson() => {
+        'content': content,
+        'status': switch (status) {
+          ChatTaskStatus.pending => 'pending',
+          ChatTaskStatus.inProgress => 'in_progress',
+          ChatTaskStatus.completed => 'completed',
+        },
+      };
+
+  static ChatTaskItem? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final content = value['content'];
+    final status = value['status'];
+    if (content is! String || content.trim().isEmpty || content.length > 180) {
+      return null;
+    }
+    final parsedStatus = switch (status) {
+      'pending' => ChatTaskStatus.pending,
+      'in_progress' => ChatTaskStatus.inProgress,
+      'completed' => ChatTaskStatus.completed,
+      _ => null,
+    };
+    if (parsedStatus == null) return null;
+    return ChatTaskItem(content: content.trim(), status: parsedStatus);
+  }
 }
 
 class Project {
@@ -593,6 +630,7 @@ class ChatConversation {
     this.createdAt,
     this.contextSummary = '',
     this.contextSummaryThroughMessageId,
+    this.taskProgress = const [],
   });
 
   final String id;
@@ -604,6 +642,7 @@ class ChatConversation {
   final DateTime? createdAt;
   final String contextSummary;
   final String? contextSummaryThroughMessageId;
+  final List<ChatTaskItem> taskProgress;
 
   ChatConversation copyWith({
     String? title,
@@ -612,6 +651,7 @@ class ChatConversation {
     String? projectPath,
     String? contextSummary,
     String? contextSummaryThroughMessageId,
+    List<ChatTaskItem>? taskProgress,
     bool clearContextSummary = false,
   }) =>
       ChatConversation(
@@ -628,5 +668,6 @@ class ChatConversation {
             ? null
             : contextSummaryThroughMessageId ??
                 this.contextSummaryThroughMessageId,
+        taskProgress: taskProgress ?? this.taskProgress,
       );
 }

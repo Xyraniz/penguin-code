@@ -557,6 +557,9 @@ class AgentDataStore {
         'contextSummary': conversation.contextSummary,
         'contextSummaryThroughMessageId':
             conversation.contextSummaryThroughMessageId,
+        'taskProgress': conversation.taskProgress
+            .map((item) => item.toJson())
+            .toList(growable: false),
       };
 
   ChatConversation _conversationFromJson(Map<String, dynamic> json) {
@@ -596,6 +599,11 @@ class AgentDataStore {
               (json['contextSummaryThroughMessageId'] as String).length <= 160
           ? json['contextSummaryThroughMessageId'] as String
           : null,
+      taskProgress: (json['taskProgress'] as List? ?? const [])
+          .map(ChatTaskItem.fromJson)
+          .whereType<ChatTaskItem>()
+          .take(24)
+          .toList(growable: false),
     );
   }
 

@@ -13,6 +13,7 @@ import 'services/agent_data_store.dart';
 import 'services/agent_memory_tool.dart';
 import 'services/chat_history_search.dart';
 import 'services/chat_history_tool.dart';
+import 'services/task_progress_tool.dart';
 import 'services/chat_output_executor.dart';
 import 'services/openai_compatible_chat_client.dart';
 import 'services/project_attachment_loader.dart';
@@ -20,6 +21,7 @@ import 'services/project_instruction_repository.dart';
 import 'services/project_tool_executor.dart';
 import 'services/tool_call_loop_guard.dart';
 import 'services/bundled_skill_repository.dart';
+import 'services/skills_hub.dart';
 import 'services/mcp_stdio_client.dart';
 import 'services/mcp_credential_store.dart';
 import 'screens/app_screens.dart';
@@ -219,6 +221,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final _outputExecutor = ChatOutputExecutor();
   final _projectInstructionRepository = ProjectInstructionRepository();
   final _skillRepository = BundledSkillRepository();
+  final _skillsHubService = SkillsHubService();
   final _skillPreferences = SharedPreferencesAsync();
   late final McpCredentialStore _mcpCredentialStore =
       widget.mcpCredentialStore ?? SecureMcpCredentialStore();
@@ -278,6 +281,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       unawaited(_persistChat(chatId));
     }
     _chatClient.close();
+    _skillsHubService.close();
     unawaited(_mcpServerManager.close());
     super.dispose();
   }
@@ -522,6 +526,43 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       });
     } catch (_) {
       if (mounted) setState(() => _availableSkills = const []);
+    }
+  }
+
+  Future<List<SkillsHubEntry>> _searchSkills(String query) =>
+      _skillsHubService.search(query);
+
+  Future<SkillsHubPreview> _inspectSkill(SkillsHubEntry entry) =>
+      _skillsHubService.inspect(entry);
+
+  Future<bool> _installSkill(SkillsHubPreview preview) async {
+    if (!_localDataReady || _isUpdatingSkillLibrary) return false;
+    setState(() => _isUpdatingSkillLibrary = true);
+    try {
+      await _skillsHubService.install(
+        preview,
+        skillsDirectory: _dataStore.skillsDirectory,
+      );
+      await _refreshLocalSkills();
+      if (!mounted) return false;
+      setState(() => _isUpdatingSkillLibrary = false);
+      _showNotice('${preview.entry.name} was added to your skills.');
+      return true;
+    } on SkillsHubException catch (error) {
+      if (!mounted) return false;
+      setState(() => _isUpdatingSkillLibrary = false);
+      _showNotice(error.message);
+      return false;
+    } on FileSystemException {
+      if (!mounted) return false;
+      setState(() => _isUpdatingSkillLibrary = false);
+      _showNotice('Could not add this skill to local storage.');
+      return false;
+    } catch (_) {
+      if (!mounted) return false;
+      setState(() => _isUpdatingSkillLibrary = false);
+      _showNotice('Could not add this skill to local storage.');
+      return false;
     }
   }
 
@@ -895,7 +936,11 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       _permissionMode != AgentPermissionMode.chatOnly;
 
   bool _requiresToolApproval(AgentPermissionMode mode, String toolName) {
-    if (toolName == 'memory' || toolName == 'search_past_chats') return false;
+    if (toolName == 'memory' ||
+        toolName == 'search_past_chats' ||
+        toolName == taskProgressToolName) {
+      return false;
+    }
     if (toolName.startsWith('mcp_tool_')) return true;
     if (mode == AgentPermissionMode.fullAccess) return false;
     if (toolName == 'run_command') return false;
@@ -1654,6 +1699,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             !isSubagent &&
             !isPlanMode &&
             _selectedModelProfile?.supportsTools != false;
+        final taskProgressToolAvailable =
+            !isPlanMode && _selectedModelProfile?.supportsTools != false;
         final toolCalls = <AgentToolCall>[];
         var rejectedToolCall = false;
         await for (final event in _chatClient.streamEvents(
@@ -1674,6 +1721,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             ...projectInstructionSections,
             if (memoryToolAvailable) agentMemoryInstructions,
             if (chatHistoryToolAvailable) chatHistorySearchInstructions,
+            if (taskProgressToolAvailable)
+              taskProgressInstructions(conversation.taskProgress),
           ].join('\n\n'),
           extraTools: [
             for (final tool in mcpAgentTools) tool.toOpenAiTool(),
@@ -1687,6 +1736,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           independentTools: [
             if (memoryToolAvailable) agentMemoryToolDefinition,
             if (chatHistoryToolAvailable) chatHistorySearchToolDefinition,
+            if (taskProgressToolAvailable) taskProgressToolDefinition,
           ],
         )) {
           if (!mounted) return;
@@ -1747,7 +1797,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
               if (enableProjectTools ||
                   (memoryToolAvailable && scopedToolCall.name == 'memory') ||
                   (chatHistoryToolAvailable &&
-                      scopedToolCall.name == 'search_past_chats')) {
+                      scopedToolCall.name == 'search_past_chats') ||
+                  (taskProgressToolAvailable &&
+                      scopedToolCall.name == taskProgressToolName)) {
                 toolCalls.add(scopedToolCall);
               } else if (!rejectedToolCall) {
                 rejectedToolCall = true;
@@ -2054,6 +2106,51 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
               toolActionStatus: controlFailed
                   ? ToolActionStatus.failed
                   : ToolActionStatus.completed,
+            );
+            _updateChatMessage(chatId, action.id, (_) => completedAction);
+            history.add(completedAction);
+            continue;
+          }
+
+          if (toolCall.name == taskProgressToolName) {
+            final parsed = !taskProgressToolAvailable
+                ? const TaskProgressUpdate.error(
+                    'Task progress is unavailable for this response.',
+                  )
+                : loopDecision.blocked || completedToolCalls > 8
+                    ? const TaskProgressUpdate.error(
+                        'The checklist update was blocked by the action limit.',
+                      )
+                    : !toolCall.hasValidArguments
+                        ? const TaskProgressUpdate.error(
+                            'The checklist arguments were invalid.',
+                          )
+                        : parseTaskProgressArguments(toolCall.arguments);
+            var result = parsed.error ?? '';
+            if (parsed.isValid) {
+              conversation = conversation.copyWith(taskProgress: parsed.todos);
+              if (isSubagent) {
+                _subagentConversations[chatId] = conversation;
+                setState(() {});
+              } else {
+                final index = _chats.indexWhere((chat) => chat.id == chatId);
+                if (index >= 0) {
+                  setState(() => _chats[index] = conversation);
+                }
+              }
+              _scheduleChatSave(chatId);
+              final complete = parsed.todos
+                  .where((todo) => todo.status == ChatTaskStatus.completed)
+                  .length;
+              result =
+                  'Updated task progress: $complete of ${parsed.todos.length} completed.';
+            }
+            final completedAction = action.copyWith(
+              content: result,
+              status: ChatMessageStatus.complete,
+              toolActionStatus: parsed.isValid
+                  ? ToolActionStatus.completed
+                  : ToolActionStatus.failed,
             );
             _updateChatMessage(chatId, action.id, (_) => completedAction);
             history.add(completedAction);
@@ -3161,6 +3258,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                       ? const []
                                       : _messagesByChatId[_activeChatId] ??
                                           const [],
+                                  taskProgress:
+                                      _activeChat?.taskProgress ?? const [],
                                   isGenerating: _activeChatId != null &&
                                       _generationStops
                                           .containsKey(_activeChatId),
@@ -3224,6 +3323,12 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                       task.id: _messagesByChatId[task.id] ??
                                           const <ChatMessage>[],
                                   },
+                                  taskProgressById: {
+                                    for (final task in _agentTasks)
+                                      task.id: _subagentConversations[task.id]
+                                              ?.taskProgress ??
+                                          const <ChatTaskItem>[],
+                                  },
                                   onAddTask: _addAgentTask,
                                   onContinueTask: _continueAgentTaskFromUi,
                                   onOpenSettings: () {
@@ -3271,6 +3376,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                       : null,
                                   onSkillActiveChanged: _setSkillActive,
                                   onRefreshLocalSkills: _refreshLocalSkills,
+                                  onSearchSkills: _searchSkills,
+                                  onInspectSkill: _inspectSkill,
+                                  onInstallSkill: _installSkill,
                                 ),
                               AppPage.settings => SettingsScreen(
                                   key: const Key('page.settings'),

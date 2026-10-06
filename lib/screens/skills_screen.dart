@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models.dart';
+import '../services/skills_hub.dart';
 import '../widgets/app_icons.dart';
 
 class SkillsScreen extends StatefulWidget {
@@ -18,6 +19,9 @@ class SkillsScreen extends StatefulWidget {
     required this.skillsDirectoryPath,
     required this.onSkillActiveChanged,
     required this.onRefreshLocalSkills,
+    required this.onSearchSkills,
+    required this.onInspectSkill,
+    required this.onInstallSkill,
   });
 
   final bool isMaterial3Installed;
@@ -32,13 +36,68 @@ class SkillsScreen extends StatefulWidget {
   final String? skillsDirectoryPath;
   final void Function(String, bool) onSkillActiveChanged;
   final Future<void> Function() onRefreshLocalSkills;
+  final Future<List<SkillsHubEntry>> Function(String) onSearchSkills;
+  final Future<SkillsHubPreview> Function(SkillsHubEntry) onInspectSkill;
+  final Future<bool> Function(SkillsHubPreview) onInstallSkill;
 
   @override
   State<SkillsScreen> createState() => _SkillsScreenState();
 }
 
 class _SkillsScreenState extends State<SkillsScreen> {
+  final _catalogQueryController = TextEditingController();
   String _category = 'All skills';
+  List<SkillsHubEntry> _catalogResults = const [];
+  String? _catalogError;
+  String? _catalogSearchedQuery;
+  bool _searchingCatalog = false;
+
+  @override
+  void dispose() {
+    _catalogQueryController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _searchCatalog() async {
+    final query = _catalogQueryController.text.trim();
+    if (query.length < 2 || query.length > 100) {
+      setState(() {
+        _catalogError = 'Search with 2 to 100 characters.';
+        _catalogResults = const [];
+      });
+      return;
+    }
+    setState(() {
+      _searchingCatalog = true;
+      _catalogError = null;
+      _catalogSearchedQuery = query;
+    });
+    try {
+      final results = await widget.onSearchSkills(query);
+      if (mounted) setState(() => _catalogResults = results);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _catalogError = error is SkillsHubException
+              ? error.message
+              : 'Could not search the skills catalog. Try again.';
+          _catalogResults = const [];
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _searchingCatalog = false);
+    }
+  }
+
+  Future<void> _showSkillDetails(SkillsHubEntry entry) => showDialog<void>(
+        context: context,
+        builder: (context) => _SkillPreviewDialog(
+          entry: entry,
+          onInspect: widget.onInspectSkill,
+          onInstall: widget.onInstallSkill,
+          isInstalling: widget.isUpdatingLibrary,
+        ),
+      );
 
   Future<void> _showDetails() => showDialog<void>(
         context: context,
@@ -96,6 +155,16 @@ class _SkillsScreenState extends State<SkillsScreen> {
                     ],
                   ),
                   const SizedBox(height: 19),
+                  _CommunitySkillsCatalog(
+                    controller: _catalogQueryController,
+                    results: _catalogResults,
+                    error: _catalogError,
+                    searchedQuery: _catalogSearchedQuery,
+                    isSearching: _searchingCatalog,
+                    onSearch: _searchCatalog,
+                    onInspect: _showSkillDetails,
+                  ),
+                  const SizedBox(height: 22),
                   if (_category == 'All skills' || _category == 'Design')
                     Wrap(
                       spacing: 18,
@@ -168,6 +237,299 @@ class _SkillsScreenState extends State<SkillsScreen> {
       },
     );
   }
+}
+
+class _CommunitySkillsCatalog extends StatelessWidget {
+  const _CommunitySkillsCatalog({
+    required this.controller,
+    required this.results,
+    required this.error,
+    required this.searchedQuery,
+    required this.isSearching,
+    required this.onSearch,
+    required this.onInspect,
+  });
+
+  final TextEditingController controller;
+  final List<SkillsHubEntry> results;
+  final String? error;
+  final String? searchedQuery;
+  final bool isSearching;
+  final VoidCallback onSearch;
+  final ValueChanged<SkillsHubEntry> onInspect;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      key: const Key('skills.marketplace'),
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: colors.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Discover skills',
+              style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Text(
+            'Search the skills.sh community catalog and review each skill before adding it.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const Key('skills.marketplace.query'),
+                  controller: controller,
+                  maxLength: 100,
+                  onSubmitted: (_) => onSearch(),
+                  decoration: const InputDecoration(
+                    counterText: '',
+                    hintText: 'Search by name or topic',
+                    prefixIcon: Icon(AppIcons.searchRounded),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 9),
+              FilledButton.icon(
+                key: const Key('skills.marketplace.search'),
+                onPressed: isSearching ? null : onSearch,
+                icon: isSearching
+                    ? const SizedBox.square(
+                        dimension: 15,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(AppIcons.searchRounded, size: 16),
+                label: const Text('Search'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(
+            'Searching shares this query with skills.sh. Only SKILL.md is downloaded after you review and add a skill; scripts are never run.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                  height: 1.4,
+                ),
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 12),
+            Text(error!,
+                key: const Key('skills.marketplace.error'),
+                style: TextStyle(color: colors.error, fontSize: 12)),
+          ],
+          if (isSearching) ...[
+            const SizedBox(height: 12),
+            const LinearProgressIndicator(),
+          ],
+          if (!isSearching &&
+              error == null &&
+              results.isEmpty &&
+              searchedQuery != null) ...[
+            const SizedBox(height: 12),
+            Text('No matching skills were found.',
+                key: const Key('skills.marketplace.empty'),
+                style: Theme.of(context).textTheme.bodySmall),
+          ],
+          if (results.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final width = constraints.maxWidth >= 810
+                    ? (constraints.maxWidth - 24) / 3
+                    : constraints.maxWidth >= 540
+                        ? (constraints.maxWidth - 12) / 2
+                        : constraints.maxWidth;
+                return Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    for (final entry in results)
+                      SizedBox(
+                        width: width,
+                        child: Card(
+                          key: Key('skills.marketplace.result.${entry.id}'),
+                          margin: EdgeInsets.zero,
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(entry.name,
+                                    style:
+                                        Theme.of(context).textTheme.titleSmall),
+                                const SizedBox(height: 5),
+                                Text(entry.source,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(
+                                            color: colors.onSurfaceVariant),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis),
+                                const SizedBox(height: 5),
+                                Text(
+                                  entry.installCount > 0
+                                      ? '${entry.installCount} community installs'
+                                      : 'Community skill',
+                                  style: Theme.of(context).textTheme.labelSmall,
+                                ),
+                                Align(
+                                  alignment: Alignment.centerRight,
+                                  child: TextButton.icon(
+                                    key: Key(
+                                        'skills.marketplace.inspect.${entry.id}'),
+                                    onPressed: () => onInspect(entry),
+                                    icon: const Icon(
+                                        AppIcons.infoOutlineRounded,
+                                        size: 15),
+                                    label: const Text('View details'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SkillPreviewDialog extends StatefulWidget {
+  const _SkillPreviewDialog({
+    required this.entry,
+    required this.onInspect,
+    required this.onInstall,
+    required this.isInstalling,
+  });
+
+  final SkillsHubEntry entry;
+  final Future<SkillsHubPreview> Function(SkillsHubEntry) onInspect;
+  final Future<bool> Function(SkillsHubPreview) onInstall;
+  final bool isInstalling;
+
+  @override
+  State<_SkillPreviewDialog> createState() => _SkillPreviewDialogState();
+}
+
+class _SkillPreviewDialogState extends State<_SkillPreviewDialog> {
+  late final Future<SkillsHubPreview> _preview = widget.onInspect(widget.entry);
+  bool _installing = false;
+
+  Future<void> _install(SkillsHubPreview preview) async {
+    if (_installing || widget.isInstalling) return;
+    setState(() => _installing = true);
+    final added = await widget.onInstall(preview);
+    if (!mounted) return;
+    if (added) Navigator.pop(context);
+    setState(() => _installing = false);
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        key: const Key('skills.marketplace.preview'),
+        title: Text(widget.entry.name),
+        content: SizedBox(
+          width: 560,
+          child: FutureBuilder<SkillsHubPreview>(
+            future: _preview,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const SizedBox(
+                  height: 180,
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+              if (snapshot.hasError || !snapshot.hasData) {
+                final error = snapshot.error;
+                return Text(error is SkillsHubException
+                    ? error.message
+                    : 'Could not load this skill preview.');
+              }
+              final preview = snapshot.data!;
+              final description = preview.description.isEmpty
+                  ? 'No description is available. Review the skill instructions below before adding it.'
+                  : preview.description;
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(widget.entry.source,
+                      style: Theme.of(context).textTheme.labelMedium),
+                  const SizedBox(height: 4),
+                  Text('License: ${preview.license ?? 'Not specified'}'),
+                  const SizedBox(height: 8),
+                  Text(description,
+                      style: Theme.of(context).textTheme.bodySmall),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'This is community-provided guidance. Review it before adding. It may be sent to your selected model when a relevant skill is used.',
+                    style: TextStyle(fontSize: 11, height: 1.4),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 300,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color:
+                            Theme.of(context).colorScheme.surfaceContainerLow,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Scrollbar(
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.all(12),
+                          child: SelectableText(
+                            preview.content,
+                            key:
+                                const Key('skills.marketplace.preview.content'),
+                            style: const TextStyle(fontSize: 11, height: 1.45),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: _installing ? null : () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FutureBuilder<SkillsHubPreview>(
+            future: _preview,
+            builder: (context, snapshot) => FilledButton.icon(
+              key: const Key('skills.marketplace.add'),
+              onPressed:
+                  snapshot.hasData && !_installing && !widget.isInstalling
+                      ? () => _install(snapshot.data!)
+                      : null,
+              icon: _installing
+                  ? const SizedBox.square(
+                      dimension: 15,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(AppIcons.addRounded, size: 16),
+              label: Text(_installing ? 'Adding…' : 'Add to my skills'),
+            ),
+          ),
+        ],
+      );
 }
 
 class _LocalSkillsSection extends StatefulWidget {
@@ -260,7 +622,10 @@ class _LocalSkillsSectionState extends State<_LocalSkillsSection> {
                 key: Key('skills.local.${skill.id}'),
                 contentPadding: EdgeInsets.zero,
                 title: Text(skill.name),
-                subtitle: Text(skill.description),
+                subtitle: Text([
+                  skill.description,
+                  if (skill.source != null) skill.source!,
+                ].join('\n')),
                 value: widget.activeSkillIds.contains(skill.id),
                 onChanged: (active) =>
                     widget.onSkillActiveChanged(skill.id, active),

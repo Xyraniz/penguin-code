@@ -102,6 +102,16 @@ void main() {
       createdAt: createdAt,
       contextSummary: 'The user approved a focused security review.',
       contextSummaryThroughMessageId: 'assistant-1',
+      taskProgress: const [
+        ChatTaskItem(
+          content: 'Inspect the authentication flow',
+          status: ChatTaskStatus.completed,
+        ),
+        ChatTaskItem(
+          content: 'Write a concise review',
+          status: ChatTaskStatus.inProgress,
+        ),
+      ],
     );
     final task = AgentTask(
       id: conversation.id,
@@ -147,6 +157,14 @@ void main() {
         'The user approved a focused security review.');
     expect(saved.single.conversation.contextSummaryThroughMessageId,
         'assistant-1');
+    expect(
+      saved.single.conversation.taskProgress
+          .map((item) => (item.content, item.status))
+          .toList(),
+      conversation.taskProgress
+          .map((item) => (item.content, item.status))
+          .toList(),
+    );
     expect(saved.single.messages.map((message) => message.content), [
       'Review project security',
       'I found an expired token check.',

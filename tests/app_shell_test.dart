@@ -244,7 +244,7 @@ void main() {
       'Run the project verification command',
     );
     await tester.tap(find.byKey(const Key('composer.send')));
-    for (var attempt = 0; attempt < 80 && responseIndex < 4; attempt++) {
+    for (var attempt = 0; attempt < 300 && responseIndex < 4; attempt++) {
       await tester.pump(const Duration(milliseconds: 50));
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 10)),
@@ -1060,7 +1060,7 @@ void main() {
       (requests.first['tools'] as List<dynamic>)
           .cast<Map<String, dynamic>>()
           .map((tool) => (tool['function'] as Map<String, dynamic>)['name']),
-      ['memory'],
+      containsAll(['memory', 'update_task_progress']),
     );
     for (var attempt = 0; attempt < 40 && responseIndex < 2; attempt++) {
       await tester.pump(const Duration(milliseconds: 50));
@@ -1227,6 +1227,74 @@ void main() {
     expect(toolResults, contains('Approval policy decision'));
     expect(toolResults, contains('edits to project files need approval'));
     expect(toolResults, isNot(contains('Tool output should never appear')));
+  });
+
+  testWidgets('tracks multi-step progress through provider requests', (
+    tester,
+  ) async {
+    await _setDesktopSize(tester);
+    final requests = <Map<String, dynamic>>[];
+    var responseIndex = 0;
+    final client = OpenAiCompatibleChatClient(
+      client: _FakeChatClient((request) async {
+        final body =
+            jsonDecode((request as http.Request).body) as Map<String, dynamic>;
+        requests.add(body);
+        final response = responseIndex++ == 0
+            ? _sseToolCall(
+                name: 'update_task_progress',
+                arguments: jsonEncode({
+                  'todos': [
+                    {'content': 'Inspect the project', 'status': 'completed'},
+                    {
+                      'content': 'Implement the requested change',
+                      'status': 'in_progress'
+                    },
+                    {'content': 'Run the test suite', 'status': 'pending'},
+                  ],
+                }),
+                id: 'record-task-progress',
+              )
+            : _sseChunk('I am working through the checklist.');
+        return _chatResponse('$response\ndata: [DONE]\n\n');
+      }),
+    );
+    await tester.pumpWidget(_testApp(chatClient: client));
+    await tester.pumpAndSettle();
+    await _configureProvider(tester);
+    await _createNewChat(tester);
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      'Implement this multi-step change and run tests.',
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+        tester, find.text('I am working through the checklist.'));
+
+    final toolNames = (requests.first['tools'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map((tool) =>
+            (tool['function'] as Map<String, dynamic>)['name'] as String)
+        .toSet();
+    expect(toolNames, contains('update_task_progress'));
+    expect(find.byKey(const Key('chat.task-progress')), findsOneWidget);
+    expect(find.text('1 of 3 completed'), findsOneWidget);
+    expect(find.text('Implement the requested change'), findsOneWidget);
+
+    final toolResult = (requests[1]['messages'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .lastWhere((message) => message['role'] == 'tool');
+    expect(toolResult['content'], 'Updated task progress: 1 of 3 completed.');
+    final followUpMessages =
+        (requests[1]['messages'] as List<dynamic>).cast<Map<String, dynamic>>();
+    final systemContext = followUpMessages
+        .where((message) => message['role'] == 'system')
+        .map((message) => message['content'].toString())
+        .join('\n');
+    expect(systemContext, contains('Current task progress:'));
+    expect(systemContext, contains('- completed: Inspect the project'));
+    expect(systemContext,
+        contains('- in_progress: Implement the requested change'));
   });
 
   testWidgets('searches discovered models and sends the selected model id', (

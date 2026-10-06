@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -64,6 +65,26 @@ class BundledSkillRepository {
         }
         final content = await skillFile.readAsString();
         if (content.trim().isEmpty) continue;
+        final metadataFile = File(
+          '${entity.path}${Platform.pathSeparator}.penguin-skill.json',
+        );
+        String? source;
+        try {
+          if (await FileSystemEntity.type(metadataFile.path,
+                      followLinks: false) ==
+                  FileSystemEntityType.file &&
+              await metadataFile.length() <= 4096) {
+            final decoded = jsonDecode(await metadataFile.readAsString());
+            if (decoded is Map && decoded['source'] is String) {
+              source = (decoded['source'] as String).substring(
+                0,
+                (decoded['source'] as String).length.clamp(0, 512).toInt(),
+              );
+            }
+          }
+        } on Object {
+          // A damaged source label does not make the skill itself unavailable.
+        }
         final slug = entity.uri.pathSegments
             .where((part) => part.isNotEmpty)
             .last
@@ -80,6 +101,7 @@ class BundledSkillRepository {
           triggerText: metadata.triggerText,
           isBundled: false,
           directoryPath: entity.path,
+          source: source,
         ));
       }
     } on FileSystemException {
