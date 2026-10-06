@@ -10,12 +10,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app_theme.dart';
 import 'models.dart';
 import 'services/agent_data_store.dart';
+import 'services/agent_hook_runner.dart';
 import 'services/agent_memory_tool.dart';
 import 'services/bounded_parallel_runner.dart';
 import 'services/chat_history_search.dart';
 import 'services/chat_history_tool.dart';
 import 'services/task_progress_tool.dart';
 import 'services/chat_output_executor.dart';
+import 'services/checkpoint_repository.dart';
 import 'services/openai_compatible_chat_client.dart';
 import 'services/project_attachment_loader.dart';
 import 'services/project_instruction_repository.dart';
@@ -196,6 +198,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   static const _subagentsEnabledPreferenceKey =
       'penguin_code.subagents_enabled';
   static const _mcpServersPreferenceKey = 'penguin_code.mcp_servers';
+  static const _hooksEnabledPreferenceKey = 'penguin_code.hooks_enabled';
+  static const _agentHooksPreferenceKey = 'penguin_code.agent_hooks';
+  static const _checkpointsEnabledPreferenceKey =
+      'penguin_code.checkpoints_enabled';
   static const _maxConcurrentSubagents = 3;
   static const _maxSubagentPromptCharacters = 4096;
   static const _maxSubagentResultCharacters = 12000;
@@ -224,6 +230,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   final _attachmentLoader = const ProjectAttachmentLoader();
   late final AgentDataStore _dataStore = widget.dataStore ?? AgentDataStore();
   final _outputExecutor = ChatOutputExecutor();
+  final _hookRunner = const AgentHookRunner();
+  late final CheckpointRepository _checkpointRepository =
+      CheckpointRepository(dataRoot: _dataStore.rootDirectory);
   final _projectInstructionRepository = ProjectInstructionRepository();
   final _skillRepository = BundledSkillRepository();
   final _skillLearningRepository = SkillLearningRepository();
@@ -261,6 +270,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
   String _agentMemoryText = '';
   List<AgentSkillProfile> _availableSkills = const [];
   List<PendingSkillProposal> _pendingSkillProposals = const [];
+  final List<FileCheckpoint> _checkpoints = [];
+  List<AgentHook> _agentHooks = const [];
+  bool _hooksEnabled = false;
+  bool _checkpointsEnabled = false;
 
   String get _combinedMemoryText => [
         _userProfileText.trim(),
@@ -344,6 +357,27 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           await _skillPreferences.getString(_reasoningSummaryPreferenceKey);
       final subagentsEnabled =
           await _skillPreferences.getBool(_subagentsEnabledPreferenceKey);
+      final hooksEnabled =
+          await _skillPreferences.getBool(_hooksEnabledPreferenceKey);
+      final checkpointsEnabled =
+          await _skillPreferences.getBool(_checkpointsEnabledPreferenceKey);
+      final hooksJson =
+          await _skillPreferences.getString(_agentHooksPreferenceKey);
+      var savedHooks = <AgentHook>[];
+      if (hooksJson != null) {
+        try {
+          final decoded = jsonDecode(hooksJson);
+          if (decoded is List) {
+            savedHooks = decoded
+                .map(AgentHook.fromJson)
+                .whereType<AgentHook>()
+                .take(32)
+                .toList(growable: false);
+          }
+        } on FormatException {
+          // Malformed hooks should not reset unrelated application settings.
+        }
+      }
       if (!mounted) return;
       setState(() {
         _responseDetail = ResponseDetail.values.firstWhere(
@@ -355,6 +389,9 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           orElse: () => ReasoningSummary.automatic,
         );
         _subagentsEnabled = subagentsEnabled ?? false;
+        _hooksEnabled = hooksEnabled ?? false;
+        _checkpointsEnabled = checkpointsEnabled ?? false;
+        _agentHooks = savedHooks;
       });
     } catch (_) {
       // Defaults remain active when the preference store is unavailable.
@@ -521,6 +558,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       }
       await _refreshLocalSkills();
       await _refreshPendingSkillProposals();
+      await _refreshCheckpoints();
     } catch (_) {
       if (mounted) setState(() => _localDataReady = true);
     }
@@ -799,6 +837,124 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
       return;
     }
     if (mounted) setState(() => _subagentsEnabled = enabled);
+  }
+
+  Future<void> _setHooksEnabled(bool enabled) async {
+    try {
+      await _skillPreferences.setBool(_hooksEnabledPreferenceKey, enabled);
+    } catch (_) {
+      if (mounted) _showNotice('Could not save this preference locally.');
+      return;
+    }
+    if (mounted) setState(() => _hooksEnabled = enabled);
+  }
+
+  Future<void> _setCheckpointsEnabled(bool enabled) async {
+    try {
+      await _skillPreferences.setBool(
+        _checkpointsEnabledPreferenceKey,
+        enabled,
+      );
+    } catch (_) {
+      if (mounted) _showNotice('Could not save this preference locally.');
+      return;
+    }
+    if (mounted) setState(() => _checkpointsEnabled = enabled);
+  }
+
+  Future<void> _saveAgentHook(AgentHook hook) async {
+    final error = hook.validationError;
+    if (error != null) {
+      _showNotice(error);
+      return;
+    }
+    final updated = [..._agentHooks];
+    final index = updated.indexWhere((item) => item.id == hook.id);
+    if (index < 0 && updated.length >= 32) {
+      _showNotice('You can configure up to 32 agent hooks.');
+      return;
+    }
+    if (index < 0) {
+      updated.add(hook);
+    } else {
+      updated[index] = hook;
+    }
+    try {
+      await _skillPreferences.setString(
+        _agentHooksPreferenceKey,
+        jsonEncode(updated.map((item) => item.toJson()).toList()),
+      );
+    } catch (_) {
+      if (mounted) _showNotice('Could not save the hook settings locally.');
+      return;
+    }
+    if (mounted) setState(() => _agentHooks = List.unmodifiable(updated));
+  }
+
+  Future<void> _deleteAgentHook(String hookId) async {
+    final updated = _agentHooks.where((hook) => hook.id != hookId).toList();
+    try {
+      await _skillPreferences.setString(
+        _agentHooksPreferenceKey,
+        jsonEncode(updated.map((item) => item.toJson()).toList()),
+      );
+    } catch (_) {
+      if (mounted) _showNotice('Could not save the hook settings locally.');
+      return;
+    }
+    if (mounted) setState(() => _agentHooks = List.unmodifiable(updated));
+  }
+
+  Future<void> _refreshCheckpoints() async {
+    if (!_localDataReady) return;
+    try {
+      final checkpoints = await _checkpointRepository.list();
+      if (mounted)
+        setState(() {
+          _checkpoints
+            ..clear()
+            ..addAll(checkpoints);
+        });
+    } on Object {
+      if (mounted) _showNotice('Checkpoint history could not be loaded.');
+    }
+  }
+
+  Future<void> _restoreCheckpoint(String id) async {
+    try {
+      final result = await _checkpointRepository.restore(id);
+      await _refreshCheckpoints();
+      if (mounted) {
+        final kept = result.keptUserChanges == 0
+            ? ''
+            : ' Kept ${result.keptUserChanges} later file change(s).';
+        _showNotice('Restored ${result.restored} file(s).$kept');
+      }
+    } on CheckpointException catch (error) {
+      if (mounted) _showNotice(error.message);
+    } on Object {
+      if (mounted) _showNotice('The checkpoint could not be restored.');
+    }
+  }
+
+  Future<void> _deleteCheckpoint(String id) async {
+    try {
+      await _checkpointRepository.delete(id);
+      await _refreshCheckpoints();
+    } on Object {
+      if (mounted) _showNotice('The checkpoint could not be deleted.');
+    }
+  }
+
+  Future<({String? before, String? after})> _previewCheckpoint(
+    String id,
+    String path,
+  ) =>
+      _checkpointRepository.preview(id, path);
+
+  void _selectSettingsTab(SettingsTab tab) {
+    setState(() => _settingsTab = tab);
+    if (tab == SettingsTab.hooks) unawaited(_refreshCheckpoints());
   }
 
   String? _responsePreferenceInstructionsFor(
@@ -1711,7 +1867,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
     var completedToolCalls = 0;
     var isPlanMode = planMode;
     final fullAccess = permissionMode == AgentPermissionMode.fullAccess;
-    final projectToolExecutor = ProjectToolExecutor();
+    late final ProjectToolExecutor projectToolExecutor;
     final toolCallLoopGuard = ToolCallLoopGuard();
     final outputExecutor = _outputExecutor;
     final loadedProjectInstructionPaths = <String>{};
@@ -1725,6 +1881,11 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
         await _dataStore.directoriesFor(conversation);
       }
       outputDirectory = await _dataStore.outputDirectoryFor(conversation);
+      projectToolExecutor = ProjectToolExecutor(
+        checkpointRepository:
+            _checkpointsEnabled ? _checkpointRepository : null,
+        chatId: chatId,
+      );
       if (learnPreference && _memoriesEnabled) {
         final learned = await _dataStore.rememberExplicitUserPreference(
           userRequest,
@@ -1917,6 +2078,25 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
               status: ChatMessageStatus.complete,
             ),
           );
+          if (_hooksEnabled && mounted) {
+            final finalText = _messagesByChatId[chatId]
+                    ?.where((message) => message.id == activeAssistantMessageId)
+                    .firstOrNull
+                    ?.content ??
+                '';
+            final hookResult = await _hookRunner.run(
+              hooks: _agentHooks,
+              event: AgentHookEvent.agentFinished,
+              workingDirectory: effectiveProjectPath,
+              chatId: chatId,
+              provider: provider.name,
+              model: provider.model,
+              toolOutput: finalText,
+            );
+            if (hookResult.output.isNotEmpty && mounted) {
+              _showNotice(hookResult.output);
+            }
+          }
           return;
         }
 
@@ -1959,6 +2139,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
           return seenReadRequests.add(fingerprint);
         });
         final mayParallelizeReads = enableProjectTools &&
+            !_hooksEnabled &&
             !isPlanMode &&
             (permissionMode == AgentPermissionMode.autoApproveProjectReads ||
                 permissionMode == AgentPermissionMode.fullAccess) &&
@@ -2070,6 +2251,32 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             );
             _updateChatMessage(chatId, action.id, (_) => pausedAction);
             history.add(pausedAction);
+            continue;
+          }
+
+          final beforeHook = _hooksEnabled
+              ? await _hookRunner.run(
+                  hooks: _agentHooks,
+                  event: AgentHookEvent.beforeTool,
+                  workingDirectory: effectiveProjectPath,
+                  chatId: chatId,
+                  provider: provider.name,
+                  model: provider.model,
+                  toolName: toolCall.name,
+                  toolInput: toolCall.arguments,
+                  abortTrigger: stop.future,
+                )
+              : const AgentHookResult();
+          if (stop.isCompleted) return;
+          if (beforeHook.blocked) {
+            final blockedAction = action.copyWith(
+              content:
+                  'The action was blocked by a configured before-tool hook. ${beforeHook.output}',
+              status: ChatMessageStatus.complete,
+              toolActionStatus: ToolActionStatus.denied,
+            );
+            _updateChatMessage(chatId, action.id, (_) => blockedAction);
+            history.add(blockedAction);
             continue;
           }
 
@@ -2638,8 +2845,8 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
             return;
           }
 
-          final String toolResult;
-          final ToolActionStatus actionStatus;
+          late String toolResult;
+          late ToolActionStatus actionStatus;
           if (blockedDuringPlanning) {
             toolResult =
                 'This action is unavailable while Plan first is active. Only listing, searching, and reading are allowed before the user approves a plan.';
@@ -2712,6 +2919,10 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                       ? await outputExecutor.execute(
                           outputDirectory: outputDirectory,
                           call: toolCall,
+                          checkpointRepository: _checkpointsEnabled
+                              ? _checkpointRepository
+                              : null,
+                          chatId: chatId,
                         )
                       : await projectToolExecutor.execute(
                           projectPath: effectiveProjectPath,
@@ -2727,7 +2938,27 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                   : toolResult.startsWith('Tool cancelled:')
                       ? ToolActionStatus.cancelled
                       : ToolActionStatus.completed;
+              if (_hooksEnabled) {
+                final afterHook = await _hookRunner.run(
+                  hooks: _agentHooks,
+                  event: AgentHookEvent.afterTool,
+                  workingDirectory: effectiveProjectPath,
+                  chatId: chatId,
+                  provider: provider.name,
+                  model: provider.model,
+                  toolName: toolCall.name,
+                  toolInput: toolCall.arguments,
+                  toolOutput: toolResult,
+                  abortTrigger: stop.future,
+                );
+                if (!stop.isCompleted && afterHook.output.isNotEmpty) {
+                  toolResult = '$toolResult\n${afterHook.output}';
+                }
+              }
             }
+          }
+          if (beforeHook.output.isNotEmpty) {
+            toolResult = '$toolResult\n${beforeHook.output}';
           }
           if (!mounted) return;
           final completedAction = action.copyWith(
@@ -3592,8 +3823,7 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                   providers: _providers,
                                   refreshingProviderIds: _refreshingProviderIds,
                                   modelDiscoveryErrors: _modelDiscoveryErrors,
-                                  onSelectTab: (tab) =>
-                                      setState(() => _settingsTab = tab),
+                                  onSelectTab: _selectSettingsTab,
                                   onAddProvider: _addProvider,
                                   onRefreshModels: (provider) =>
                                       _refreshProviderModels(provider.id),
@@ -3629,6 +3859,22 @@ class _PenguinHomeShellState extends State<PenguinHomeShell> {
                                       _autoRememberPreferences,
                                   autoSelectSkills: _autoSelectSkills,
                                   skillLearningEnabled: _skillLearningEnabled,
+                                  checkpointingEnabled: _checkpointsEnabled,
+                                  onCheckpointingChanged: (enabled) =>
+                                      unawaited(
+                                    _setCheckpointsEnabled(enabled),
+                                  ),
+                                  checkpoints: List.unmodifiable(_checkpoints),
+                                  onRefreshCheckpoints: _refreshCheckpoints,
+                                  onRestoreCheckpoint: _restoreCheckpoint,
+                                  onDeleteCheckpoint: _deleteCheckpoint,
+                                  onPreviewCheckpoint: _previewCheckpoint,
+                                  hooksEnabled: _hooksEnabled,
+                                  agentHooks: List.unmodifiable(_agentHooks),
+                                  onHooksEnabledChanged: (enabled) =>
+                                      unawaited(_setHooksEnabled(enabled)),
+                                  onSaveHook: _saveAgentHook,
+                                  onDeleteHook: _deleteAgentHook,
                                   dataDirectoryPath: _dataStore.rootPath,
                                   isLocalDataReady: _localDataReady,
                                   onSaveUserProfile: _saveUserProfile,

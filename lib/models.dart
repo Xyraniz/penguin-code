@@ -1,6 +1,6 @@
 enum AppPage { chat, agents, changes, skills, settings }
 
-enum SettingsTab { general, models, tools, mcp, memory, shortcuts }
+enum SettingsTab { general, models, tools, hooks, mcp, memory, shortcuts }
 
 enum ResponseDetail { modelDefault, low, medium, high }
 
@@ -11,6 +11,110 @@ enum AgentTaskStatus { queued, running, completed, failed, stopped }
 enum ChatTaskStatus { pending, inProgress, completed }
 
 enum McpTransportType { stdio, http, sse }
+
+enum AgentHookEvent { beforeTool, afterTool, agentFinished }
+
+class AgentHook {
+  const AgentHook({
+    required this.id,
+    required this.name,
+    required this.event,
+    required this.command,
+    this.matcher = '',
+    this.enabled = false,
+    this.timeoutSeconds = 10,
+  });
+
+  final String id;
+  final String name;
+  final AgentHookEvent event;
+  final String command;
+  final String matcher;
+  final bool enabled;
+  final int timeoutSeconds;
+
+  AgentHook copyWith({
+    String? name,
+    AgentHookEvent? event,
+    String? command,
+    String? matcher,
+    bool? enabled,
+    int? timeoutSeconds,
+  }) =>
+      AgentHook(
+        id: id,
+        name: name ?? this.name,
+        event: event ?? this.event,
+        command: command ?? this.command,
+        matcher: matcher ?? this.matcher,
+        enabled: enabled ?? this.enabled,
+        timeoutSeconds: timeoutSeconds ?? this.timeoutSeconds,
+      );
+
+  String? get validationError {
+    if (id.isEmpty || id.length > 80) return 'The hook ID is invalid.';
+    if (name.trim().isEmpty || name.trim().length > 64) {
+      return 'Enter a hook name up to 64 characters.';
+    }
+    if (command.trim().isEmpty || command.length > 4096) {
+      return 'Enter a command up to 4 KiB.';
+    }
+    if (matcher.length > 256) return 'The tool matcher is too long.';
+    if (timeoutSeconds < 1 || timeoutSeconds > 60) {
+      return 'Hook timeout must be between 1 and 60 seconds.';
+    }
+    if (matcher.isNotEmpty) {
+      try {
+        RegExp(matcher);
+      } on FormatException {
+        return 'The tool matcher is not a valid regular expression.';
+      }
+    }
+    return null;
+  }
+
+  Map<String, Object?> toJson() => {
+        'id': id,
+        'name': name,
+        'event': event.name,
+        'command': command,
+        'matcher': matcher,
+        'enabled': enabled,
+        'timeoutSeconds': timeoutSeconds,
+      };
+
+  static AgentHook? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final id = value['id'];
+    final name = value['name'];
+    final event = AgentHookEvent.values
+        .where((item) => item.name == value['event'])
+        .firstOrNull;
+    final command = value['command'];
+    final matcher = value['matcher'] ?? '';
+    final enabled = value['enabled'] ?? false;
+    final timeoutSeconds = value['timeoutSeconds'] ?? 10;
+    if (id is! String ||
+        name is! String ||
+        event == null ||
+        command is! String ||
+        matcher is! String ||
+        enabled is! bool ||
+        timeoutSeconds is! int) {
+      return null;
+    }
+    final hook = AgentHook(
+      id: id,
+      name: name,
+      event: event,
+      command: command,
+      matcher: matcher,
+      enabled: enabled,
+      timeoutSeconds: timeoutSeconds,
+    );
+    return hook.validationError == null ? hook : null;
+  }
+}
 
 class McpServerProfile {
   const McpServerProfile({

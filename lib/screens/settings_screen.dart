@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import '../app_theme.dart';
 import '../models.dart';
+import '../services/checkpoint_repository.dart';
 import '../services/mcp_stdio_client.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/project_access_menu.dart';
@@ -37,6 +39,18 @@ class SettingsScreen extends StatelessWidget {
     required this.autoRememberPreferences,
     required this.autoSelectSkills,
     required this.skillLearningEnabled,
+    required this.checkpointingEnabled,
+    required this.onCheckpointingChanged,
+    required this.checkpoints,
+    required this.onRefreshCheckpoints,
+    required this.onRestoreCheckpoint,
+    required this.onDeleteCheckpoint,
+    required this.onPreviewCheckpoint,
+    required this.hooksEnabled,
+    required this.agentHooks,
+    required this.onHooksEnabledChanged,
+    required this.onSaveHook,
+    required this.onDeleteHook,
     required this.dataDirectoryPath,
     required this.isLocalDataReady,
     required this.onSaveUserProfile,
@@ -82,6 +96,19 @@ class SettingsScreen extends StatelessWidget {
   final bool autoRememberPreferences;
   final bool autoSelectSkills;
   final bool skillLearningEnabled;
+  final bool checkpointingEnabled;
+  final ValueChanged<bool> onCheckpointingChanged;
+  final List<FileCheckpoint> checkpoints;
+  final Future<void> Function() onRefreshCheckpoints;
+  final Future<void> Function(String) onRestoreCheckpoint;
+  final Future<void> Function(String) onDeleteCheckpoint;
+  final Future<({String? before, String? after})> Function(String, String)
+      onPreviewCheckpoint;
+  final bool hooksEnabled;
+  final List<AgentHook> agentHooks;
+  final ValueChanged<bool> onHooksEnabledChanged;
+  final Future<void> Function(AgentHook) onSaveHook;
+  final Future<void> Function(String) onDeleteHook;
   final String? dataDirectoryPath;
   final bool isLocalDataReady;
   final Future<void> Function(String) onSaveUserProfile;
@@ -105,6 +132,7 @@ class SettingsScreen extends StatelessWidget {
         SettingsTab.general => 'General',
         SettingsTab.models => 'Providers and models',
         SettingsTab.tools => 'Tools and permissions',
+        SettingsTab.hooks => 'Agent hooks',
         SettingsTab.mcp => 'MCP servers',
         SettingsTab.memory => 'Memories',
         SettingsTab.shortcuts => 'Keyboard shortcuts',
@@ -114,6 +142,7 @@ class SettingsScreen extends StatelessWidget {
         SettingsTab.general => 'Application preferences and active project.',
         SettingsTab.models => 'Connection profiles and available models.',
         SettingsTab.tools => 'Choose which actions require your approval.',
+        SettingsTab.hooks => 'Automations and file recovery for agent work.',
         SettingsTab.mcp =>
           'Connect local and remote tool servers to your agent.',
         SettingsTab.memory => 'Personal context and skill matching.',
@@ -128,6 +157,7 @@ class SettingsScreen extends StatelessWidget {
         color: selected ? AppColors.iceStrong : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
+          key: Key('settings.tab.${tab.name}'),
           onTap: () => onSelectTab(tab),
           borderRadius: BorderRadius.circular(10),
           child: Padding(
@@ -194,6 +224,20 @@ class SettingsScreen extends StatelessWidget {
           onDelete: onDeleteMcpServer,
           onRefresh: onRefreshMcpServer,
         ),
+      SettingsTab.hooks => _AgentHooksSettings(
+          hooksEnabled: hooksEnabled,
+          hooks: agentHooks,
+          onHooksEnabledChanged: onHooksEnabledChanged,
+          onSaveHook: onSaveHook,
+          onDeleteHook: onDeleteHook,
+          checkpointingEnabled: checkpointingEnabled,
+          onCheckpointingChanged: onCheckpointingChanged,
+          checkpoints: checkpoints,
+          onRefreshCheckpoints: onRefreshCheckpoints,
+          onRestoreCheckpoint: onRestoreCheckpoint,
+          onDeleteCheckpoint: onDeleteCheckpoint,
+          onPreviewCheckpoint: onPreviewCheckpoint,
+        ),
       SettingsTab.memory => _MemorySettings(
           userProfileText: userProfileText,
           agentMemoryText: agentMemoryText,
@@ -251,6 +295,11 @@ class SettingsScreen extends StatelessWidget {
                     SettingsTab.tools,
                     AppIcons.securityOutlined,
                     'Tools and permissions',
+                  ),
+                  _tabButton(
+                    SettingsTab.hooks,
+                    Icons.bolt_outlined,
+                    'Agent hooks',
                   ),
                   _tabButton(
                     SettingsTab.mcp,
@@ -788,6 +837,536 @@ class _GeneralSettings extends StatelessWidget {
       ],
     );
   }
+}
+
+class _AgentHooksSettings extends StatelessWidget {
+  const _AgentHooksSettings({
+    required this.hooksEnabled,
+    required this.hooks,
+    required this.onHooksEnabledChanged,
+    required this.onSaveHook,
+    required this.onDeleteHook,
+    required this.checkpointingEnabled,
+    required this.onCheckpointingChanged,
+    required this.checkpoints,
+    required this.onRefreshCheckpoints,
+    required this.onRestoreCheckpoint,
+    required this.onDeleteCheckpoint,
+    required this.onPreviewCheckpoint,
+  });
+
+  final bool hooksEnabled;
+  final List<AgentHook> hooks;
+  final ValueChanged<bool> onHooksEnabledChanged;
+  final Future<void> Function(AgentHook) onSaveHook;
+  final Future<void> Function(String) onDeleteHook;
+  final bool checkpointingEnabled;
+  final ValueChanged<bool> onCheckpointingChanged;
+  final List<FileCheckpoint> checkpoints;
+  final Future<void> Function() onRefreshCheckpoints;
+  final Future<void> Function(String) onRestoreCheckpoint;
+  final Future<void> Function(String) onDeleteCheckpoint;
+  final Future<({String? before, String? after})> Function(String, String)
+      onPreviewCheckpoint;
+
+  Future<void> _editHook(BuildContext context, [AgentHook? hook]) async {
+    final result = await showDialog<AgentHook>(
+      context: context,
+      builder: (context) => _AgentHookDialog(hook: hook),
+    );
+    if (result != null) await onSaveHook(result);
+  }
+
+  Future<void> _reviewCheckpoint(
+    BuildContext context,
+    FileCheckpoint checkpoint,
+  ) async {
+    final restore = await showDialog<bool>(
+      context: context,
+      builder: (context) => _CheckpointReviewDialog(
+        checkpoint: checkpoint,
+        onPreview: onPreviewCheckpoint,
+      ),
+    );
+    if (restore == true) await onRestoreCheckpoint(checkpoint.id);
+  }
+
+  Future<void> _deleteCheckpoint(
+      BuildContext context, FileCheckpoint checkpoint) async {
+    final delete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete checkpoint?'),
+        content: Text(
+            'This permanently removes the saved files for ${checkpoint.rootPath}.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (delete == true) await onDeleteCheckpoint(checkpoint.id);
+  }
+
+  String _date(DateTime value) {
+    final local = value.toLocal();
+    String twoDigits(int item) => item.toString().padLeft(2, '0');
+    return '${local.year}-${twoDigits(local.month)}-${twoDigits(local.day)} ${twoDigits(local.hour)}:${twoDigits(local.minute)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final orderedHooks = [...hooks]..sort((a, b) => a.name.compareTo(b.name));
+    final orderedCheckpoints = [...checkpoints]
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SettingsCard(
+          title: 'Automatic checkpoints',
+          description:
+              'Save a recovery point before file edits, generated outputs, and shell commands.',
+          trailing: Switch.adaptive(
+            key: const Key('settings.checkpoints.enabled'),
+            value: checkpointingEnabled,
+            onChanged: onCheckpointingChanged,
+          ),
+          child: const Text(
+            'Off by default. Snapshots are stored under Documents/Penguin-code/Checkpoints. Workspace snapshots skip common build and dependency folders, symbolic links, and files over 50 MiB. A snapshot is stopped before an action if it exceeds 10,000 files or 250 MiB.',
+            style: TextStyle(color: AppColors.muted, fontSize: 12),
+          ),
+        ),
+        const SizedBox(height: 13),
+        _SettingsCard(
+          title: 'Checkpoint history',
+          description:
+              'Review changed files and restore a saved state. Later manual edits are kept when they differ from the agent state.',
+          trailing: IconButton(
+            key: const Key('settings.checkpoints.refresh'),
+            tooltip: 'Refresh checkpoints',
+            onPressed: onRefreshCheckpoints,
+            icon: const Icon(Icons.refresh),
+          ),
+          child: orderedCheckpoints.isEmpty
+              ? const Text(
+                  'No file changes have been checkpointed yet.',
+                  style: TextStyle(color: AppColors.muted, fontSize: 12),
+                )
+              : Column(
+                  children: [
+                    for (final checkpoint in orderedCheckpoints)
+                      ListTile(
+                        key: Key('settings.checkpoint.${checkpoint.id}'),
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(
+                          checkpoint.complete
+                              ? Icons.history_rounded
+                              : Icons.warning_amber_rounded,
+                          color: checkpoint.complete
+                              ? AppColors.blue
+                              : AppColors.amber,
+                        ),
+                        title: Text(
+                          '${checkpoint.toolName} · ${_date(checkpoint.createdAt)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          '${checkpoint.rootPath}\n${checkpoint.complete ? '${checkpoint.files.length} changed files' : 'Recovery point from an interrupted action'}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        isThreeLine: true,
+                        trailing: Wrap(
+                          spacing: 2,
+                          children: [
+                            IconButton(
+                              key: Key(
+                                  'settings.checkpoint.review.${checkpoint.id}'),
+                              tooltip: 'Review and restore',
+                              onPressed: () =>
+                                  _reviewCheckpoint(context, checkpoint),
+                              icon: const Icon(Icons.restore_rounded),
+                            ),
+                            IconButton(
+                              key: Key(
+                                  'settings.checkpoint.delete.${checkpoint.id}'),
+                              tooltip: 'Delete checkpoint',
+                              onPressed: () =>
+                                  _deleteCheckpoint(context, checkpoint),
+                              icon: const Icon(Icons.delete_outline_rounded),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+        const SizedBox(height: 20),
+        _SettingsCard(
+          title: 'Agent hooks',
+          description:
+              'Run your own commands before tools, after tools, or when an agent finishes.',
+          trailing: Switch.adaptive(
+            key: const Key('settings.hooks.enabled'),
+            value: hooksEnabled,
+            onChanged: onHooksEnabledChanged,
+          ),
+          child: const Text(
+            'Off by default. Hooks run with your account permissions and receive event data over standard input. A before-tool hook can block an action, but cannot approve it or override your access mode.',
+            style: TextStyle(color: AppColors.muted, fontSize: 12),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerRight,
+          child: FilledButton.icon(
+            key: const Key('settings.hooks.add'),
+            onPressed: () => _editHook(context),
+            icon: const Icon(Icons.add),
+            label: const Text('Add hook'),
+          ),
+        ),
+        if (orderedHooks.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              'No hooks configured.',
+              style: TextStyle(color: AppColors.muted, fontSize: 12),
+            ),
+          )
+        else
+          for (final hook in orderedHooks)
+            Card(
+              key: Key('settings.hook.${hook.id}'),
+              child: ListTile(
+                leading: const Icon(Icons.bolt_outlined),
+                title: Text(hook.name),
+                subtitle: Text(
+                  '${hook.event.label}${hook.matcher.isEmpty ? '' : ' · ${hook.matcher}'}\n${hook.command}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                isThreeLine: true,
+                onTap: () => _editHook(context, hook),
+                trailing: Wrap(
+                  spacing: 2,
+                  children: [
+                    Switch.adaptive(
+                      key: Key('settings.hook.enabled.${hook.id}'),
+                      value: hook.enabled,
+                      onChanged: (enabled) =>
+                          onSaveHook(hook.copyWith(enabled: enabled)),
+                    ),
+                    IconButton(
+                      key: Key('settings.hook.delete.${hook.id}'),
+                      tooltip: 'Delete hook',
+                      onPressed: () => onDeleteHook(hook.id),
+                      icon: const Icon(Icons.delete_outline_rounded),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+      ],
+    );
+  }
+}
+
+extension on AgentHookEvent {
+  String get label => switch (this) {
+        AgentHookEvent.beforeTool => 'Before tool',
+        AgentHookEvent.afterTool => 'After tool',
+        AgentHookEvent.agentFinished => 'Agent finished',
+      };
+}
+
+class _AgentHookDialog extends StatefulWidget {
+  const _AgentHookDialog({this.hook});
+
+  final AgentHook? hook;
+
+  @override
+  State<_AgentHookDialog> createState() => _AgentHookDialogState();
+}
+
+class _AgentHookDialogState extends State<_AgentHookDialog> {
+  late final TextEditingController _name;
+  late final TextEditingController _matcher;
+  late final TextEditingController _command;
+  late AgentHookEvent _event;
+  late int _timeoutSeconds;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final hook = widget.hook;
+    _name = TextEditingController(text: hook?.name ?? '');
+    _matcher = TextEditingController(text: hook?.matcher ?? '');
+    _command = TextEditingController(text: hook?.command ?? '');
+    _event = hook?.event ?? AgentHookEvent.beforeTool;
+    _timeoutSeconds = hook?.timeoutSeconds ?? 10;
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _matcher.dispose();
+    _command.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final hook = AgentHook(
+      id: widget.hook?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
+      name: _name.text.trim(),
+      event: _event,
+      matcher:
+          _event == AgentHookEvent.agentFinished ? '' : _matcher.text.trim(),
+      command: _command.text,
+      enabled: widget.hook?.enabled ?? false,
+      timeoutSeconds: _timeoutSeconds,
+    );
+    final error = hook.validationError;
+    if (error != null) {
+      setState(() => _error = error);
+      return;
+    }
+    Navigator.pop(context, hook);
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        key: const Key('settings.hooks.dialog'),
+        title: Text(widget.hook == null ? 'Add hook' : 'Edit hook'),
+        content: SizedBox(
+          width: 500,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  key: const Key('settings.hooks.name'),
+                  controller: _name,
+                  decoration: const InputDecoration(labelText: 'Name'),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<AgentHookEvent>(
+                  key: const Key('settings.hooks.event'),
+                  initialValue: _event,
+                  decoration: const InputDecoration(labelText: 'When to run'),
+                  items: [
+                    for (final event in AgentHookEvent.values)
+                      DropdownMenuItem(value: event, child: Text(event.label)),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setState(() => _event = value);
+                  },
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('settings.hooks.matcher'),
+                  controller: _matcher,
+                  enabled: _event != AgentHookEvent.agentFinished,
+                  decoration: const InputDecoration(
+                    labelText: 'Tool name matcher (regular expression)',
+                    hintText: r'^(edit_project_file|run_command)$',
+                    helperText: 'Leave empty to match every tool.',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('settings.hooks.command'),
+                  controller: _command,
+                  maxLines: 4,
+                  minLines: 2,
+                  decoration: InputDecoration(
+                    labelText: Platform.isWindows
+                        ? 'PowerShell command'
+                        : 'Shell command',
+                    helperText:
+                        'The event payload is provided as JSON on standard input. Exit with code 2 to block a before-tool action.',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<int>(
+                  key: const Key('settings.hooks.timeout'),
+                  initialValue: _timeoutSeconds,
+                  decoration: const InputDecoration(labelText: 'Timeout'),
+                  items: const [5, 10, 20, 30, 60]
+                      .map((seconds) => DropdownMenuItem(
+                            value: seconds,
+                            child: Text('$seconds seconds'),
+                          ))
+                      .toList(growable: false),
+                  onChanged: (value) {
+                    if (value != null) setState(() => _timeoutSeconds = value);
+                  },
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      _error!,
+                      style: const TextStyle(color: AppColors.red),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('settings.hooks.save'),
+            onPressed: _save,
+            child: const Text('Save hook'),
+          ),
+        ],
+      );
+}
+
+class _CheckpointReviewDialog extends StatelessWidget {
+  const _CheckpointReviewDialog({
+    required this.checkpoint,
+    required this.onPreview,
+  });
+
+  final FileCheckpoint checkpoint;
+  final Future<({String? before, String? after})> Function(String, String)
+      onPreview;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        key: Key('settings.checkpoint.review_dialog.${checkpoint.id}'),
+        title: const Text('Review checkpoint'),
+        content: SizedBox(
+          width: 680,
+          height: 390,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(checkpoint.rootPath),
+              const SizedBox(height: 8),
+              Text(
+                checkpoint.complete
+                    ? 'Files edited by the agent are restored only if they still match the saved post-action state.'
+                    : 'This action ended before its checkpoint finished. Restoring may overwrite later changes in this folder.',
+                style: const TextStyle(color: AppColors.muted, fontSize: 12),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: checkpoint.files.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'The saved pre-action state is available. The action ended before its changed files could be recorded.',
+                        ),
+                      )
+                    : ListView(
+                        children: [
+                          for (final change in checkpoint.files)
+                            ExpansionTile(
+                              key: Key(
+                                  'settings.checkpoint.file.${checkpoint.id}.${change.path}'),
+                              title: Text(change.path),
+                              subtitle: Text(
+                                change.beforeExists
+                                    ? change.afterExists
+                                        ? 'Modified'
+                                        : 'Deleted by the agent'
+                                    : 'Created by the agent',
+                              ),
+                              children: [
+                                FutureBuilder<
+                                    ({String? before, String? after})>(
+                                  future: onPreview(checkpoint.id, change.path),
+                                  builder: (context, snapshot) {
+                                    if (!snapshot.hasData) {
+                                      return const Padding(
+                                        padding: EdgeInsets.all(16),
+                                        child: LinearProgressIndicator(),
+                                      );
+                                    }
+                                    final preview = snapshot.data!;
+                                    return Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          16, 4, 16, 14),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          const Text('Before'),
+                                          _CheckpointTextPreview(
+                                              value: preview.before ??
+                                                  '[File did not exist]'),
+                                          const SizedBox(height: 8),
+                                          const Text('After'),
+                                          _CheckpointTextPreview(
+                                              value: preview.after ??
+                                                  '[File was deleted]'),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ],
+                            ),
+                        ],
+                      ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            key: Key('settings.checkpoint.restore.${checkpoint.id}'),
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.restore_rounded),
+            label: const Text('Restore'),
+          ),
+        ],
+      );
+}
+
+class _CheckpointTextPreview extends StatelessWidget {
+  const _CheckpointTextPreview({required this.value});
+
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: double.infinity,
+        constraints: const BoxConstraints(maxHeight: 96),
+        margin: const EdgeInsets.only(top: 4),
+        padding: const EdgeInsets.all(9),
+        decoration: BoxDecoration(
+          color: AppColors.canvas,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppColors.line),
+        ),
+        child: SingleChildScrollView(
+          child: SelectableText(
+            value,
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+          ),
+        ),
+      );
 }
 
 class _ModelSettings extends StatelessWidget {

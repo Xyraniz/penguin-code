@@ -3,10 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../models.dart';
+import 'checkpoint_repository.dart';
 import 'project_attachment_loader.dart';
 
 class ProjectToolExecutor {
-  ProjectToolExecutor();
+  ProjectToolExecutor({this.checkpointRepository, this.chatId = ''});
+
+  final CheckpointRepository? checkpointRepository;
+  final String chatId;
 
   static const supportedTools = <String>{
     'list_project_files',
@@ -84,6 +88,8 @@ class ProjectToolExecutor {
       };
     } on ProjectAttachmentException catch (error) {
       return 'Tool error: project file action failed. ${error.message}';
+    } on CheckpointException catch (error) {
+      return 'Tool error: ${error.message}';
     } on FileSystemException {
       return 'Tool error: the selected project folder or requested path is no longer available.';
     } on ProcessException {
@@ -320,13 +326,28 @@ class ProjectToolExecutor {
       );
     }
 
+    final capture = await checkpointRepository?.beginFile(
+      filePath: requested.absolutePath,
+      chatId: chatId,
+      toolName: 'edit_project_file',
+    );
     await File(requested.absolutePath).writeAsString(
       updatedContent,
       encoding: utf8,
       flush: true,
     );
     _observedFiles.remove(observationKey);
-    return 'Updated ${requested.relativePath}.';
+    FileCheckpoint? checkpoint;
+    var checkpointWarning = '';
+    if (capture != null) {
+      try {
+        checkpoint = await checkpointRepository!.finish(capture);
+      } on Object {
+        checkpointWarning =
+            ' The edit was applied, but its checkpoint could not be finalized. The pending checkpoint remains in Settings for recovery.';
+      }
+    }
+    return 'Updated ${requested.relativePath}.${checkpoint == null ? checkpointWarning : ' Checkpoint ${checkpoint.id} is available in Settings.'}';
   }
 
   Future<String> _readFullAccessTextFile(String path) async {
@@ -428,6 +449,11 @@ class ProjectToolExecutor {
           ? requestedDirectory.trim()
           : projectRoot,
     );
+    final capture = await checkpointRepository?.beginDirectory(
+      rootPath: workingDirectory,
+      chatId: chatId,
+      toolName: 'run_command',
+    );
 
     final Process process;
     try {
@@ -439,6 +465,7 @@ class ProjectToolExecutor {
         workingDirectory: workingDirectory,
       );
     } on ProcessException {
+      if (capture != null) await checkpointRepository!.finish(capture);
       return 'Tool error: the command shell could not be started.';
     }
 
@@ -520,7 +547,7 @@ class ProjectToolExecutor {
         ..write(stderr);
     if (truncated) result.write('\n[Command output truncated at 16 KiB.]');
     final output = result.toString();
-    return switch (outcome) {
+    final commandResult = switch (outcome) {
       _CommandStop.cancelled =>
         'Tool cancelled: command stopped by the user.\n$output',
       _CommandStop.timedOut =>
@@ -529,6 +556,16 @@ class ProjectToolExecutor {
         'Tool error: command exited with code $code.\n$output',
       _ => 'Command completed successfully.\n$output',
     };
+    if (capture == null) return commandResult;
+    FileCheckpoint? checkpoint;
+    try {
+      checkpoint = await checkpointRepository!.finish(capture);
+    } on Object {
+      return '$commandResult\nThe command has finished, but its checkpoint could not be finalized. The pending checkpoint remains in Settings for recovery.';
+    }
+    return checkpoint == null
+        ? commandResult
+        : '$commandResult\nCheckpoint ${checkpoint.id} is available in Settings.';
   }
 
   Future<String> _resolveWorkingDirectory(

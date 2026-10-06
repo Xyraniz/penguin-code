@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../models.dart';
+import 'checkpoint_repository.dart';
 
 class ChatOutputExecutor {
   static const maxOutputBytes = 1024 * 1024;
@@ -43,6 +44,8 @@ class ChatOutputExecutor {
   Future<String> execute({
     required String outputDirectory,
     required AgentToolCall call,
+    CheckpointRepository? checkpointRepository,
+    String chatId = '',
   }) async {
     if (!supports(call.name) || !call.hasValidArguments) {
       return 'Tool error: this output action is not available.';
@@ -95,13 +98,30 @@ class ChatOutputExecutor {
       if (existingType != FileSystemEntityType.notFound) {
         return 'Tool error: this output file already exists. Choose a new filename to preserve it.';
       }
+      final capture = await checkpointRepository?.beginDirectory(
+        rootPath: outputDirectory,
+        chatId: chatId,
+        toolName: 'save_chat_output',
+      );
       await file.create(exclusive: true);
       await file.writeAsString(contents, flush: true);
-      return 'Created chat output: ${file.path}';
+      FileCheckpoint? checkpoint;
+      var checkpointWarning = '';
+      if (capture != null) {
+        try {
+          checkpoint = await checkpointRepository!.finish(capture);
+        } on Object {
+          checkpointWarning =
+              '\nThe output was created, but its checkpoint could not be finalized. The pending checkpoint remains in Settings for recovery.';
+        }
+      }
+      return 'Created chat output: ${file.path}${checkpoint == null ? checkpointWarning : '\nCheckpoint ${checkpoint.id} is available in Settings.'}';
     } on FileSystemException catch (error) {
       return 'Tool error: could not save the chat output (${error.message}).';
     } on FormatException {
       return 'Tool error: the requested output path is invalid.';
+    } on CheckpointException catch (error) {
+      return 'Tool error: ${error.message}';
     }
   }
 

@@ -35,6 +35,8 @@ Penguin Code is an early native desktop prototype with a working text chat for O
 - Computer-wide file tools in every access mode, with mode-based approvals and safeguards for paths, file types, output size, and tool rounds
 - Approval-gated, unique-match project file edits with inline diffs
 - Full access mode for computer-wide text-file edits and shell commands
+- Optional file checkpoints with review, selective restore, and protection for later manual edits
+- User-configured before-tool, after-tool, and agent-finished hooks in Settings
 - Session change review for edits applied to computer files
 - Session-only provider profiles and API keys
 - Persistent, resumable subagent conversations with model and UI controls
@@ -68,6 +70,12 @@ Subagents are optional and off by default. Turn them on in **Settings → Genera
 
 **Settings → General** also provides **Output detail** (Model default, Low, Medium, or High) and **Reasoning summary** (Automatic, Concise, Detailed, or None). These preferences are sent as system-message guidance so they work with the app's OpenAI-compatible Chat Completions endpoint; exact behavior depends on the selected model and provider. Reasoning-summary choices request only a high-level explanation and never hidden chain-of-thought.
 
+## Hooks and checkpoints
+
+Open **Settings → Agent hooks** to configure local automations and recovery. Hooks are off by default; enable both the master switch and each hook you want to run. Before-tool commands receive event JSON on standard input. Exit code `2` blocks the action, and a timeout also blocks it; a hook cannot grant computer access or bypass the selected approval mode. After-tool output is returned to the model as context. Agent-finished hooks can run local notifications or other commands when a response ends. Hooks support PowerShell on Windows and the default shell on macOS and Linux, run with your account permissions, and have a configurable timeout and bounded event output. Keep secrets out of hook commands and scripts.
+
+Automatic checkpoints are separately opt-in and default to off. Penguin Code saves a file checkpoint before built-in text edits and generated outputs, and a working-folder checkpoint before shell commands. Data is stored under `Documents/Penguin-code/Checkpoints`, outside the project `.git` directory. Shell checkpoints cover the command's working folder; they skip common build/dependency folders and symbolic links, and stop before an action if the 10,000-file or 250 MiB limit is exceeded. Individual files are limited to 50 MiB. Settings lists checkpoints for review, previews text changes, restores changed files, and keeps later edits when a file no longer matches the state the agent left behind. Pending checkpoints from an interrupted action require an explicit restore confirmation. MCP and other external side effects cannot be reversed by filesystem checkpoints.
+
 ## Configure a provider
 
 Open **Settings → Models → Add provider** and enter the provider name, base URL, model identifier, and optional API key. For example, a local server can use `http://127.0.0.1:11434/v1` and a remote service should use its HTTPS base URL. Penguin Code discovers the endpoint's models after saving; use **Refresh models** in settings to update the list. The model picker in the top bar searches models by name or provider and displays provider-reported metadata. When the selected model declares reasoning levels, use the adjacent effort menu to choose one; selections are kept per model for the current session. Select a model, start a chat with or without a project, and send a message. If model discovery is unsupported, the manually entered model remains available.
@@ -89,4 +97,4 @@ Use `-d macos` or `-d linux` on the matching development platform. Flutter can t
 flutter test tests
 ```
 
-The tests cover the app shell, session-only provider setup, request formatting, streaming responses, endpoint validation, cancellation, attachment safety limits, Plan first review and permission gates, ordered parallel reads and their concurrency limit, staged skill proposal review and safety checks, MCP JSON-RPC discovery and tool routing, and chat interaction using fake HTTP and MCP transports. No live API key, provider, or MCP server is required.
+The tests cover the app shell, session-only provider setup, request formatting, streaming responses, endpoint validation, cancellation, attachment safety limits, Plan first review and permission gates, ordered parallel reads and their concurrency limit, file checkpoint creation, preview and restore, hook settings and execution policies, staged skill proposal review and safety checks, MCP JSON-RPC discovery and tool routing, and chat interaction using fake HTTP and MCP transports. No live API key, provider, or MCP server is required.

@@ -55,6 +55,9 @@ class AgentDataStore {
   Future<void>? _initializing;
 
   String? get rootPath => _root?.path;
+  Directory get rootDirectory => Directory(_requireRoot().path);
+  Directory get checkpointsDirectory =>
+      Directory(_join([_requireRoot().path, 'Checkpoints']));
   bool get usedFallbackLocation =>
       _root != null && _root!.path != _primaryRoot.path;
 

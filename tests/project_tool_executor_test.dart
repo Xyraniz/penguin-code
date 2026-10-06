@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:penguin_code/models.dart';
+import 'package:penguin_code/services/checkpoint_repository.dart';
 import 'package:penguin_code/services/project_tool_executor.dart';
 
 void main() {
@@ -169,6 +170,60 @@ void main() {
       );
       expect(edit, contains('Updated'));
       expect(await externalFile.readAsString(), 'Remember the clear ice.\n');
+    });
+
+    test('checkpoints app edits and shell command changes for recovery',
+        () async {
+      final dataRoot = await Directory.systemTemp.createTemp('penguin-data-');
+      final project = await Directory.systemTemp.createTemp('penguin-work-');
+      addTearDown(() => dataRoot.delete(recursive: true));
+      addTearDown(() => project.delete(recursive: true));
+      final source = File('${project.path}${Platform.pathSeparator}main.dart');
+      await source.writeAsString('before\n');
+      final checkpoints = CheckpointRepository(dataRoot: dataRoot);
+      final executor = ProjectToolExecutor(
+        checkpointRepository: checkpoints,
+        chatId: 'chat-1',
+      );
+
+      await executor.execute(
+        projectPath: project.path,
+        call: _call('read_project_file', {'path': 'main.dart'}),
+      );
+      final edit = await executor.execute(
+        projectPath: project.path,
+        call: _call('edit_project_file', {
+          'file_path': 'main.dart',
+          'old_string': 'before',
+          'new_string': 'after',
+        }),
+      );
+      expect(edit, contains('Checkpoint'));
+      final editCheckpoint = (await checkpoints.list()).first;
+      await checkpoints.restore(editCheckpoint.id);
+      expect(await source.readAsString(), 'before\n');
+
+      final created = File(
+        '${project.path}${Platform.pathSeparator}created.txt',
+      );
+      final command = Platform.isWindows
+          ? "Set-Content -LiteralPath '${created.path}' -Value 'created'"
+          : "printf created > '${created.path}'";
+      final result = await executor.execute(
+        projectPath: project.path,
+        fullAccess: true,
+        call: _call('run_command', {
+          'command': command,
+          'working_directory': project.path,
+        }),
+      );
+      expect(result, contains('Checkpoint'));
+      expect((await created.readAsString()).trim(), 'created');
+      final commandCheckpoint = (await checkpoints.list()).firstWhere(
+        (checkpoint) => checkpoint.toolName == 'run_command',
+      );
+      await checkpoints.restore(commandCheckpoint.id);
+      expect(await created.exists(), isFalse);
     });
 
     test('runs commands only in full access mode', () async {

@@ -71,6 +71,93 @@ void main() {
     expect(find.byKey(const Key('sidebar.panel')), findsOneWidget);
   });
 
+  testWidgets('configures hooks and checkpoints from Settings', (tester) async {
+    await _setDesktopSize(tester);
+    await tester.pumpWidget(_testApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings.tab.hooks')));
+    await tester.pumpAndSettle();
+
+    final checkpointsToggle =
+        find.byKey(const Key('settings.checkpoints.enabled'));
+    final hooksToggle = find.byKey(const Key('settings.hooks.enabled'));
+    expect(tester.widget<Switch>(checkpointsToggle).value, isFalse);
+    expect(tester.widget<Switch>(hooksToggle).value, isFalse);
+    await tester.tap(checkpointsToggle);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings.hooks.add')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('settings.hooks.name')),
+      'Block unsafe commands',
+    );
+    await tester.enterText(
+      find.byKey(const Key('settings.hooks.command')),
+      "Write-Output 'Checked'",
+    );
+    await tester.tap(find.byKey(const Key('settings.hooks.save')));
+    await tester.pumpAndSettle();
+    final hookToggle = find.byWidgetPredicate((widget) =>
+        widget.key is ValueKey<String> &&
+        (widget.key! as ValueKey<String>)
+            .value
+            .startsWith('settings.hook.enabled.'));
+    expect(hookToggle, findsOneWidget);
+    await tester.ensureVisible(hookToggle);
+    await tester.pumpAndSettle();
+    await tester.tap(hookToggle);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(hooksToggle);
+    await tester.pumpAndSettle();
+    await tester.tap(hooksToggle);
+    await tester.pumpAndSettle();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 100)),
+    );
+
+    final preferences = SharedPreferencesAsync();
+    expect(
+      await tester.runAsync(
+        () => preferences.getBool('penguin_code.checkpoints_enabled'),
+      ),
+      isTrue,
+    );
+    expect(
+      await tester.runAsync(
+        () => preferences.getBool('penguin_code.hooks_enabled'),
+      ),
+      isTrue,
+    );
+    final savedHooks = await tester.runAsync(
+      () => preferences.getString('penguin_code.agent_hooks'),
+    );
+    expect(savedHooks, contains('Block unsafe commands'));
+    expect(savedHooks, contains('"enabled":true'));
+  });
+
+  testWidgets('ignores malformed saved hooks without resetting other settings',
+      (tester) async {
+    final preferences = SharedPreferencesAsync();
+    await preferences.setString('penguin_code.agent_hooks', '{');
+    await preferences.setString('penguin_code.response_detail', 'high');
+    await _setDesktopSize(tester);
+    await tester.pumpWidget(_testApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('sidebar.settings')));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<DropdownButtonFormField<ResponseDetail>>(
+            find.byKey(const Key('settings.responseDetail')),
+          )
+          .initialValue,
+      ResponseDetail.high,
+    );
+  });
+
   testWidgets('keeps skill learning opt-in and requires review to install', (
     tester,
   ) async {
