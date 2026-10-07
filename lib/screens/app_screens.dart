@@ -971,7 +971,7 @@ class _Composer extends StatelessWidget {
                                             ? _composerAccessLabel(
                                                 permissionMode)
                                             : 'Chat workspace · ${_composerAccessLabel(permissionMode)}'
-                                        : 'Chat only · computer access is unavailable.',
+                                        : 'Computer tools are unavailable for this model.',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
@@ -1048,14 +1048,12 @@ class _Composer extends StatelessWidget {
 }
 
 String _accessDescription(AgentPermissionMode mode) => switch (mode) {
-      AgentPermissionMode.chatOnly =>
-        'Computer file access is disabled. Choose another mode to let the agent work with files.',
       AgentPermissionMode.askBeforeEachAction =>
-        'The agent can work with supported files anywhere on your computer. Every file action needs your approval. Commands require Full access.',
-      AgentPermissionMode.autoApproveProjectReads =>
-        'The agent can work with supported files anywhere on your computer. Listing, search, and reads run automatically; edits need your approval. Commands require Full access.',
+        'Every file action and connected tool call needs your approval. Commands require Full access.',
+      AgentPermissionMode.approveForMe =>
+        'File listings, searches, and reads run automatically. Edits and connected tools ask first. Commands require Full access.',
       AgentPermissionMode.fullAccess =>
-        'Full access is enabled. The connected model can read and edit files anywhere on your computer and run commands without asking first.',
+        'Full access is enabled. The connected model can read and edit supported files anywhere on your computer and run commands without asking first. Connected tools still ask for approval.',
     };
 
 String _composerAccessLabel(AgentPermissionMode mode) =>
@@ -1463,14 +1461,21 @@ class _ToolActionCard extends StatelessWidget {
             'search_past_chats' => 'Search past chats',
             'update_task_progress' => 'Update task progress',
             'read_project_file' => 'Read a file',
+            'read_tool_output' => 'Read saved tool output',
             'edit_project_file' => 'Edit a file',
+            'create_project_instructions' => 'Create project instructions',
             'run_command' => 'Run a command',
             'delegate_task' => 'Delegate task',
             _ => 'Computer file action',
           };
-    final isEdit = message.toolName == 'edit_project_file';
+    final isCreateInstructions =
+        message.toolName == 'create_project_instructions';
+    final isEdit =
+        message.toolName == 'edit_project_file' || isCreateInstructions;
     final target = message.toolArguments['command'] ??
+        (isCreateInstructions ? 'AGENTS.md' : null) ??
         message.toolArguments['file_path'] ??
+        message.toolArguments['file_name'] ??
         message.toolArguments['path'] ??
         message.toolArguments['query'] ??
         '.';
@@ -1578,9 +1583,11 @@ class _ToolActionCard extends StatelessWidget {
                     child: Text(
                       isMcpTool
                           ? 'This tool will run on the connected MCP server. Review the request before every call.'
-                          : isEdit
-                              ? 'Review the proposed replacement. It applies only if the file was read and has not changed since then.'
-                              : 'This request can access supported files anywhere on your computer. The selected access mode controls approval.',
+                          : isCreateInstructions
+                              ? 'Review the generated AGENTS.md. It will be created only if no file with that name already exists.'
+                              : isEdit
+                                  ? 'Review the proposed replacement. It applies only if the file was read and has not changed since then.'
+                                  : 'This request can access supported files anywhere on your computer. The selected access mode controls approval.',
                       style: const TextStyle(
                         color: AppColors.muted,
                         fontSize: 11,
@@ -1590,12 +1597,15 @@ class _ToolActionCard extends StatelessWidget {
                   ),
                   if (isEdit) ...[
                     _ProjectTextDiff(
-                      oldText: message.toolArguments['old_string'] is String
+                      oldText: !isCreateInstructions &&
+                              message.toolArguments['old_string'] is String
                           ? message.toolArguments['old_string'] as String
                           : '',
-                      newText: message.toolArguments['new_string'] is String
-                          ? message.toolArguments['new_string'] as String
-                          : '',
+                      newText: isCreateInstructions
+                          ? (message.toolArguments['content'] as String? ?? '')
+                          : message.toolArguments['new_string'] is String
+                              ? message.toolArguments['new_string'] as String
+                              : '',
                     ),
                   ],
                   const SizedBox(height: 9),
@@ -2199,9 +2209,8 @@ class _AgentsScreenState extends State<AgentsScreen> {
   }
 
   String _permissionLabel(AgentPermissionMode mode) => switch (mode) {
-        AgentPermissionMode.chatOnly => 'Chat only',
-        AgentPermissionMode.askBeforeEachAction => 'Ask before every action',
-        AgentPermissionMode.autoApproveProjectReads => 'Auto-approve reads',
+        AgentPermissionMode.askBeforeEachAction => 'Ask for approval',
+        AgentPermissionMode.approveForMe => 'Approve for me',
         AgentPermissionMode.fullAccess => 'Full access',
       };
 }

@@ -167,6 +167,7 @@ class OpenAiCompatibleChatClient {
     bool fullAccess = false,
     bool allowComputerPaths = false,
     bool planMode = false,
+    bool initializeProject = false,
     String? reasoningEffort,
     String? skillInstructions,
     String? contextSummary,
@@ -182,6 +183,7 @@ class OpenAiCompatibleChatClient {
         fullAccess: fullAccess,
         allowComputerPaths: allowComputerPaths,
         planMode: planMode,
+        initializeProject: initializeProject,
         reasoningEffort: reasoningEffort,
         skillInstructions: skillInstructions,
         contextSummary: contextSummary,
@@ -198,6 +200,7 @@ class OpenAiCompatibleChatClient {
     bool fullAccess = false,
     bool allowComputerPaths = false,
     bool planMode = false,
+    bool initializeProject = false,
     String? reasoningEffort,
     String? skillInstructions,
     String? contextSummary,
@@ -236,6 +239,7 @@ class OpenAiCompatibleChatClient {
           fullAccess,
           allowComputerPaths,
           planMode,
+          initializeProject,
           reasoningEffort,
           skillInstructions,
           extraTools,
@@ -342,6 +346,7 @@ class OpenAiCompatibleChatClient {
           fullAccess: fullAccess,
           allowComputerPaths: allowComputerPaths,
           planMode: planMode,
+          initializeProject: initializeProject,
           reasoningEffort: reasoningEffort,
           skillInstructions: skillInstructions,
           contextSummary: activeSummary,
@@ -509,6 +514,7 @@ class OpenAiCompatibleChatClient {
     final summaryBaseBody = _requestBody(
       provider,
       const [],
+      false,
       false,
       false,
       false,
@@ -717,6 +723,7 @@ class OpenAiCompatibleChatClient {
       bool fullAccess,
       bool allowComputerPaths,
       bool planMode,
+      bool initializeProject,
       String? reasoningEffort,
       String? skillInstructions,
       List<Map<String, Object?>> extraTools,
@@ -788,6 +795,9 @@ class OpenAiCompatibleChatClient {
                             _chatOutputToolDefinition
                           ]),
             if (!planMode) ...extraTools,
+            if (!planMode) _readToolOutputDefinition,
+            if (initializeProject && !planMode)
+              _createProjectInstructionsToolDefinition,
           ],
           ...independentTools,
         ],
@@ -1118,6 +1128,60 @@ const _editProjectToolDefinition = {
         },
       },
       'required': ['file_path', 'old_string', 'new_string'],
+      'additionalProperties': false,
+    },
+  },
+};
+
+const _createProjectInstructionsToolDefinition = {
+  'type': 'function',
+  'function': {
+    'name': 'create_project_instructions',
+    'description':
+        'Create a new AGENTS.md in the selected project root during an explicit /init request. This tool never overwrites an existing file. The app applies its normal computer access approval mode before writing.',
+    'parameters': {
+      'type': 'object',
+      'properties': {
+        'content': {
+          'type': 'string',
+          'description':
+              'Concise, verified project instructions in Markdown, including useful build and test commands.',
+          'maxLength': 32768,
+        },
+      },
+      'required': ['content'],
+      'additionalProperties': false,
+    },
+  },
+};
+
+const _readToolOutputDefinition = {
+  'type': 'function',
+  'function': {
+    'name': 'read_tool_output',
+    'description':
+        'Read a page from an oversized tool result saved to the current chat outputs. Use only the exact tool-output filename returned with the result, then request the next byte offset until the tool reports the end. Each page is at most 8 KiB.',
+    'parameters': {
+      'type': 'object',
+      'properties': {
+        'file_name': {
+          'type': 'string',
+          'description': 'Saved tool-output filename, not a path.',
+          'maxLength': 100,
+        },
+        'offset': {
+          'type': 'integer',
+          'description': 'Byte offset returned by the previous page.',
+          'minimum': 0,
+        },
+        'length': {
+          'type': 'integer',
+          'description': 'Requested page size in bytes, from 1 to 8192.',
+          'minimum': 1,
+          'maximum': 8192,
+        },
+      },
+      'required': ['file_name', 'offset', 'length'],
       'additionalProperties': false,
     },
   },

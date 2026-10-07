@@ -44,7 +44,7 @@ void main() {
       providerId: 'provider-1',
       providerName: 'Example provider',
       modelId: 'model-1',
-      permissionMode: AgentPermissionMode.autoApproveProjectReads,
+      permissionMode: AgentPermissionMode.approveForMe,
       createdAt: DateTime.utc(2026, 10, 5),
       reasoningEffortId: 'medium',
     );

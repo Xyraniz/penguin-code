@@ -7,34 +7,42 @@ import 'checkpoint_repository.dart';
 import 'project_attachment_loader.dart';
 
 class ProjectToolExecutor {
-  ProjectToolExecutor({this.checkpointRepository, this.chatId = ''});
+  ProjectToolExecutor({
+    this.checkpointRepository,
+    this.chatId = '',
+    this.enableProjectInitialization = false,
+  });
 
   final CheckpointRepository? checkpointRepository;
   final String chatId;
+  final bool enableProjectInitialization;
 
   static const supportedTools = <String>{
     'list_project_files',
     'search_project_files',
     'read_project_file',
     'edit_project_file',
+    'create_project_instructions',
     'run_command',
   };
 
   static const maxEditTextBytes = 16 * 1024;
   static const maxCommandTextBytes = 8 * 1024;
-  static const maxCommandOutputBytes = 16 * 1024;
+  static const maxCommandOutputBytes = 8 * 1024 * 1024;
+  static const maxProjectInstructionsBytes = 32 * 1024;
   static const commandTimeout = Duration(seconds: 60);
 
   final Map<String, String> _observedFiles = {};
 
   bool supports(String toolName, {bool fullAccess = false}) =>
       supportedTools.contains(toolName) &&
+      (toolName != 'create_project_instructions' ||
+          enableProjectInitialization) &&
       (fullAccess || toolName != 'run_command');
 
   static const maxListedEntries = 160;
   static const maxScannedFiles = 240;
   static const maxSearchMatches = 30;
-  static const maxOutputCharacters = 12000;
 
   static const _blockedExtensions = <String>{'jks', 'key', 'p12', 'pem', 'pfx'};
   static final _sensitiveNamePattern = RegExp(
@@ -71,6 +79,10 @@ class ProjectToolExecutor {
             fullAccess: fullAccess,
             allowComputerPaths: allowComputerPaths,
           ),
+        'create_project_instructions' when enableProjectInitialization =>
+          await _createProjectInstructions(root, call.arguments),
+        'create_project_instructions' =>
+          'Tool error: project initialization is not active for this request.',
         'edit_project_file' => await _editFile(
             root,
             call.arguments,
@@ -129,8 +141,7 @@ class ProjectToolExecutor {
     if (entries.isEmpty) return 'No readable files were found in this folder.';
     final suffix =
         hasMore ? '\nShowing the first $maxListedEntries entries.' : '';
-    return _bounded(
-        'Computer files in ${_displayPath(path.relativePath)}:\n${entries.join('\n')}$suffix');
+    return 'Computer files in ${_displayPath(path.relativePath)}:\n${entries.join('\n')}$suffix';
   }
 
   Future<String> _searchFiles(String root, Map<String, dynamic> arguments,
@@ -199,9 +210,7 @@ class ProjectToolExecutor {
         scanned >= maxScannedFiles || matches.length >= maxSearchMatches
             ? '\nSearch stopped at its safety limit.'
             : '';
-    return _bounded(
-      'Found ${matches.length} matches for ${jsonEncode(query)} in $scanned files:\n${matches.join('\n')}$limitNote',
-    );
+    return 'Found ${matches.length} matches for ${jsonEncode(query)} in $scanned files:\n${matches.join('\n')}$limitNote';
   }
 
   Future<String> _readFile(
@@ -234,7 +243,7 @@ class ProjectToolExecutor {
       );
     }
     _observedFiles[_normalize(requested.absolutePath)] = content;
-    return _bounded('File: ${requested.relativePath}\n\n$content');
+    return 'File: ${requested.relativePath}\n\n$content';
   }
 
   Future<String> _editFile(
@@ -348,6 +357,77 @@ class ProjectToolExecutor {
       }
     }
     return 'Updated ${requested.relativePath}.${checkpoint == null ? checkpointWarning : ' Checkpoint ${checkpoint.id} is available in Settings.'}';
+  }
+
+  Future<String> _createProjectInstructions(
+    String projectRoot,
+    Map<String, dynamic> arguments,
+  ) async {
+    final content = arguments['content'];
+    if (content is! String || content.trim().isEmpty) {
+      throw const ProjectAttachmentException(
+        'Project instructions must contain non-empty text.',
+      );
+    }
+    if (utf8.encode(content).length > maxProjectInstructionsBytes) {
+      throw const ProjectAttachmentException(
+        'AGENTS.md is limited to 32 KiB.',
+      );
+    }
+
+    final target = File(_joinPath(projectRoot, 'AGENTS.md'));
+    final targetType =
+        await FileSystemEntity.type(target.path, followLinks: false);
+    if (targetType == FileSystemEntityType.link) {
+      throw const ProjectAttachmentException(
+        'AGENTS.md is a symbolic link and cannot be replaced.',
+      );
+    }
+    if (targetType != FileSystemEntityType.notFound) {
+      throw const ProjectAttachmentException(
+        'AGENTS.md already exists. Read it first and use edit_project_file for a targeted update.',
+      );
+    }
+
+    final capture = await checkpointRepository?.beginDirectory(
+      rootPath: projectRoot,
+      chatId: chatId,
+      toolName: 'create_project_instructions',
+    );
+    var created = false;
+    try {
+      await target.create(exclusive: true);
+      created = true;
+      await target.writeAsString(content, encoding: utf8, flush: true);
+    } on Object {
+      if (created) {
+        try {
+          await target.delete();
+        } on Object {
+          // Preserve the original write error.
+        }
+      }
+      if (capture != null) {
+        try {
+          await checkpointRepository!.finish(capture);
+        } on Object {
+          // Preserve the original write error.
+        }
+      }
+      rethrow;
+    }
+
+    FileCheckpoint? checkpoint;
+    var checkpointWarning = '';
+    if (capture != null) {
+      try {
+        checkpoint = await checkpointRepository!.finish(capture);
+      } on Object {
+        checkpointWarning =
+            ' The file was created, but its checkpoint could not be finalized. The pending checkpoint remains in Settings for recovery.';
+      }
+    }
+    return 'Created AGENTS.md in the project root.${checkpoint == null ? checkpointWarning : ' Checkpoint ${checkpoint.id} is available in Settings.'}';
   }
 
   Future<String> _readFullAccessTextFile(String path) async {
@@ -545,7 +625,9 @@ class ProjectToolExecutor {
       result
         ..writeln('stderr:')
         ..write(stderr);
-    if (truncated) result.write('\n[Command output truncated at 16 KiB.]');
+    if (truncated) {
+      result.write('\n[Command output reached the 8 MiB capture limit.]');
+    }
     final output = result.toString();
     final commandResult = switch (outcome) {
       _CommandStop.cancelled =>
@@ -841,10 +923,6 @@ class ProjectToolExecutor {
     final value = path.replaceAll(r'\', '/');
     return Platform.isWindows ? value.toLowerCase() : value;
   }
-
-  String _bounded(String value) => value.length <= maxOutputCharacters
-      ? value
-      : '${value.substring(0, maxOutputCharacters)}\nOutput truncated at the tool limit.';
 }
 
 class _ResolvedPath {

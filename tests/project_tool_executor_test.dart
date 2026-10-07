@@ -9,6 +9,44 @@ import 'package:penguin_code/services/project_tool_executor.dart';
 
 void main() {
   group('ProjectToolExecutor', () {
+    test('creates AGENTS.md only during explicit project initialization',
+        () async {
+      final project = await Directory.systemTemp.createTemp('penguin-init-');
+      addTearDown(() => project.delete(recursive: true));
+      const content = '# Project guide\n\nRun `flutter test` for tests.\n';
+      final disabled = ProjectToolExecutor();
+      final call = _call('create_project_instructions', {'content': content});
+
+      expect(disabled.supports('create_project_instructions'), isFalse);
+      expect(
+        await disabled.execute(projectPath: project.path, call: call),
+        contains('not active'),
+      );
+      expect(
+        await File('${project.path}${Platform.pathSeparator}AGENTS.md')
+            .exists(),
+        isFalse,
+      );
+
+      final executor = ProjectToolExecutor(enableProjectInitialization: true);
+      expect(executor.supports('create_project_instructions'), isTrue);
+      final created =
+          await executor.execute(projectPath: project.path, call: call);
+      expect(created, contains('Created AGENTS.md'));
+      final instructions =
+          File('${project.path}${Platform.pathSeparator}AGENTS.md');
+      expect(await instructions.readAsString(), content);
+
+      final overwrite = await executor.execute(
+        projectPath: project.path,
+        call: _call('create_project_instructions', {
+          'content': '# Do not overwrite the existing guide',
+        }),
+      );
+      expect(overwrite, contains('already exists'));
+      expect(await instructions.readAsString(), content);
+    });
+
     test('edits one unique match after reading the unchanged file', () async {
       final project = await _createProject('const greeting = "Hello";\n');
       addTearDown(() => project.delete(recursive: true));
@@ -276,7 +314,8 @@ void main() {
         fullAccess: true,
         call: _call('run_command', {'command': outputCommand}),
       );
-      expect(boundedOutput, contains('Command output truncated at 16 KiB'));
+      expect(boundedOutput, isNot(contains('capture limit')));
+      expect(boundedOutput, contains('x' * 20000));
       expect(
         utf8.encode(boundedOutput).length,
         lessThan(ProjectToolExecutor.maxCommandOutputBytes + 512),

@@ -164,7 +164,7 @@ class McpStdioClient {
 
   static const maxMessageBytes = mcpMaxMessageBytes;
   static const maxToolArgumentBytes = 64 * 1024;
-  static const maxToolOutputCharacters = 24000;
+  static const maxToolOutputCharacters = 1024 * 1024;
   static const maxToolsPerServer = 48;
 
   final McpStdioTransport _transport;
@@ -314,7 +314,7 @@ class McpStdioClient {
           timeout: const Duration(seconds: 30));
       final text = _toolResultText(result);
       final bounded = text.length > maxToolOutputCharacters
-          ? '${text.substring(0, maxToolOutputCharacters)}\n[Output truncated at 24,000 characters.]'
+          ? '${text.substring(0, maxToolOutputCharacters)}\n[Output truncated at the 1 MiB MCP text limit.]'
           : text;
       return result['isError'] == true ? 'Tool error: $bounded' : bounded;
     } on McpException catch (error) {

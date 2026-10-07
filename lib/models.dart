@@ -310,9 +310,8 @@ enum ChatMessageStatus {
 }
 
 enum AgentPermissionMode {
-  chatOnly,
   askBeforeEachAction,
-  autoApproveProjectReads,
+  approveForMe,
   fullAccess,
 }
 
@@ -576,6 +575,14 @@ class AgentTask {
       return fallback;
     }
 
+    AgentPermissionMode permissionModeValue(Object? name) => switch (name) {
+          'approveForMe' ||
+          'autoApproveProjectReads' =>
+            AgentPermissionMode.approveForMe,
+          'fullAccess' => AgentPermissionMode.fullAccess,
+          _ => AgentPermissionMode.askBeforeEachAction,
+        };
+
     String boundedString(String key, int maxLength, {String fallback = ''}) {
       final candidate = value[key];
       if (candidate is! String) return fallback;
@@ -617,11 +624,7 @@ class AgentTask {
       providerId: optionalString('providerId', 160),
       providerName: optionalString('providerName', 120),
       modelId: optionalString('modelId', 300),
-      permissionMode: enumValue(
-        AgentPermissionMode.values,
-        value['permissionMode'],
-        AgentPermissionMode.askBeforeEachAction,
-      ),
+      permissionMode: permissionModeValue(value['permissionMode']),
       createdAt: DateTime.tryParse(
         value['createdAt'] is String ? value['createdAt'] as String : '',
       ),

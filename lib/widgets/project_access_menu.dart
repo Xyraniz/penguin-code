@@ -6,34 +6,29 @@ import 'app_icons.dart';
 
 extension AgentPermissionModePresentation on AgentPermissionMode {
   String get title => switch (this) {
-        AgentPermissionMode.chatOnly => 'Chat only',
-        AgentPermissionMode.askBeforeEachAction => 'Ask before every action',
-        AgentPermissionMode.autoApproveProjectReads => 'Auto-approve reads',
+        AgentPermissionMode.askBeforeEachAction => 'Ask for approval',
+        AgentPermissionMode.approveForMe => 'Approve for me',
         AgentPermissionMode.fullAccess => 'Full access',
       };
 
   String get description => switch (this) {
-        AgentPermissionMode.chatOnly =>
-          'The agent cannot access files on your computer.',
         AgentPermissionMode.askBeforeEachAction =>
-          'Approve every file list, search, or read anywhere on the computer. File edits always ask first.',
-        AgentPermissionMode.autoApproveProjectReads =>
-          'List, search, and read supported files anywhere. File edits still require approval.',
+          'Always asks before every file action and connected tool call.',
+        AgentPermissionMode.approveForMe =>
+          'Approves routine reads and asks before edits or potentially unsafe actions.',
         AgentPermissionMode.fullAccess =>
-          'Read and edit files anywhere and run commands without per-action approval. Risky.',
+          'Reads and edits supported files and runs commands without asking. High risk.',
       };
 
   String get compactLabel => switch (this) {
-        AgentPermissionMode.chatOnly => 'Chat only',
         AgentPermissionMode.askBeforeEachAction => 'Ask first',
-        AgentPermissionMode.autoApproveProjectReads => 'Read access',
+        AgentPermissionMode.approveForMe => 'Approve for me',
         AgentPermissionMode.fullAccess => 'Full access',
       };
 
   IconData get icon => switch (this) {
-        AgentPermissionMode.chatOnly => AppIcons.chatBubbleOutlineRounded,
         AgentPermissionMode.askBeforeEachAction => AppIcons.hand,
-        AgentPermissionMode.autoApproveProjectReads => AppIcons.shieldCheck,
+        AgentPermissionMode.approveForMe => AppIcons.shieldCheck,
         AgentPermissionMode.fullAccess => AppIcons.securityOutlined,
       };
 }
@@ -120,7 +115,7 @@ class ProjectAccessMenu extends StatelessWidget {
           PopupMenuItem<AgentPermissionMode>(
             key: Key('project.access.option.${mode.name}'),
             value: mode,
-            height: 79,
+            height: 94,
             padding: const EdgeInsets.symmetric(horizontal: 11),
             child: Row(
               children: [
@@ -158,7 +153,7 @@ class ProjectAccessMenu extends StatelessWidget {
                       const SizedBox(height: 3),
                       Text(
                         mode.description,
-                        maxLines: 2,
+                        maxLines: 3,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           color: AppColors.muted,

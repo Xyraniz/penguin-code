@@ -58,7 +58,7 @@ void main() {
           transport.sent.map((message) => message['method']), ['initialize']);
     });
 
-    test('truncates oversized tool output before returning it to the model',
+    test('keeps long tool output intact for chat-level spill storage',
         () async {
       final transport = _FakeTransport(callOutput: 'x' * 25000);
       final client = await McpStdioClient.connect(
@@ -68,8 +68,9 @@ void main() {
 
       final result = await client.callTool('lookup', {'query': 'large'});
 
-      expect(result.length, lessThan(24100));
-      expect(result, contains('[Output truncated at 24,000 characters.]'));
+      expect(result.length, 25000);
+      expect(result, startsWith('x'));
+      expect(result, endsWith('x'));
       await client.close();
     });
   });

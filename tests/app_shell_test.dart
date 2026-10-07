@@ -317,7 +317,7 @@ void main() {
     expect(find.text('No messages'), findsOneWidget);
     expect(
       find.text(
-        'The agent can work with supported files anywhere on your computer. Every file action needs your approval. Commands require Full access.',
+        'Every file action and connected tool call needs your approval. Commands require Full access.',
       ),
       findsOneWidget,
     );
@@ -565,7 +565,7 @@ void main() {
     await tester.tap(find.byKey(const Key('project.access.menu')));
     await tester.pumpAndSettle();
     await tester.tap(
-      find.byKey(const Key('project.access.option.autoApproveProjectReads')),
+      find.byKey(const Key('project.access.option.approveForMe')),
     );
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -799,7 +799,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(
       find.byKey(
-        const Key('project.access.option.autoApproveProjectReads'),
+        const Key('project.access.option.approveForMe'),
       ),
     );
     await tester.pumpAndSettle();
@@ -1309,7 +1309,8 @@ void main() {
     expect(find.text('Bearer private-test-token'), findsNothing);
   });
 
-  testWidgets('memory tool stores agent notes separately in Chat only mode', (
+  testWidgets('memory tool stores agent notes separately in ask approval mode',
+      (
     tester,
   ) async {
     await _setDesktopSize(tester);
@@ -1353,7 +1354,7 @@ void main() {
     await tester.tap(find.byKey(const Key('project.access.menu')));
     await tester.pumpAndSettle();
     await tester.tap(
-      find.byKey(const Key('project.access.option.chatOnly')),
+      find.byKey(const Key('project.access.option.askBeforeEachAction')),
     );
     await tester.pumpAndSettle();
 
@@ -1798,7 +1799,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(
       find.byKey(
-        const Key('project.access.option.autoApproveProjectReads'),
+        const Key('project.access.option.approveForMe'),
       ),
     );
     await tester.pumpAndSettle();
@@ -2498,7 +2499,7 @@ void main() {
     await tester.tap(find.byKey(const Key('project.access.menu')));
     await tester.pumpAndSettle();
     await tester.tap(
-      find.byKey(const Key('project.access.option.autoApproveProjectReads')),
+      find.byKey(const Key('project.access.option.approveForMe')),
     );
     await tester.pumpAndSettle();
     await tester.enterText(

@@ -166,6 +166,78 @@ void main() {
       expect(parameters['additionalProperties'], isFalse);
     });
 
+    test('exposes AGENTS.md creation only for explicit project init requests',
+        () async {
+      late http.BaseRequest sentRequest;
+      final client = OpenAiCompatibleChatClient(
+        client: _FakeClient((request) async {
+          sentRequest = request;
+          return _response(
+              'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n');
+        }),
+      );
+
+      await client
+          .streamEvents(
+            provider: _provider(),
+            history: const [],
+            abortTrigger: Completer<void>().future,
+            enableProjectTools: true,
+          )
+          .toList();
+      var body = jsonDecode((sentRequest as http.Request).body)
+          as Map<String, dynamic>;
+      var tools = body['tools'] as List<dynamic>;
+      expect(
+        tools.any((tool) =>
+            (tool as Map<String, dynamic>)['function']['name'] ==
+            'create_project_instructions'),
+        isFalse,
+      );
+
+      await client
+          .streamEvents(
+            provider: _provider(),
+            history: const [],
+            abortTrigger: Completer<void>().future,
+            enableProjectTools: true,
+            initializeProject: true,
+          )
+          .toList();
+      body = jsonDecode((sentRequest as http.Request).body)
+          as Map<String, dynamic>;
+      tools = body['tools'] as List<dynamic>;
+      final initTool = tools.cast<Map<String, dynamic>>().singleWhere(
+            (tool) =>
+                (tool['function'] as Map<String, dynamic>)['name'] ==
+                'create_project_instructions',
+          );
+      expect(
+        (initTool['function'] as Map<String, dynamic>)['description'],
+        contains('never overwrites'),
+      );
+
+      await client
+          .streamEvents(
+            provider: _provider(),
+            history: const [],
+            abortTrigger: Completer<void>().future,
+            enableProjectTools: true,
+            initializeProject: true,
+            planMode: true,
+          )
+          .toList();
+      body = jsonDecode((sentRequest as http.Request).body)
+          as Map<String, dynamic>;
+      tools = body['tools'] as List<dynamic>;
+      expect(
+        tools.any((tool) =>
+            (tool as Map<String, dynamic>)['function']['name'] ==
+            'create_project_instructions'),
+        isFalse,
+      );
+    });
+
     test('advertises command execution only in full access mode', () async {
       late http.BaseRequest sentRequest;
       final client = OpenAiCompatibleChatClient(
