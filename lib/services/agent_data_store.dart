@@ -251,8 +251,24 @@ class AgentDataStore {
       if (agentTask != null) 'agentTask': agentTask.toJson(),
     };
     await tempFile.writeAsString(jsonEncode(payload), flush: true);
-    if (file.existsSync()) await file.delete();
-    await tempFile.rename(file.path);
+    final backup = File('${file.path}.bak');
+    try {
+      if (file.existsSync()) {
+        if (backup.existsSync()) await backup.delete();
+        await file.rename(backup.path);
+      }
+      await tempFile.rename(file.path);
+      if (backup.existsSync()) await backup.delete();
+    } on Object {
+      if (!file.existsSync() && backup.existsSync()) {
+        try {
+          await backup.rename(file.path);
+        } on Object {
+          // Keep the backup for loadConversations to recover on next launch.
+        }
+      }
+      rethrow;
+    }
   }
 
   Future<List<SavedConversation>> loadConversations() async {
@@ -269,14 +285,27 @@ class AgentDataStore {
         await for (final chatDirectory in day.list(followLinks: false)) {
           if (chatDirectory is! Directory) continue;
           final file = File(_join([chatDirectory.path, 'chat.json']));
-          if (!file.existsSync()) continue;
-          try {
-            final decoded = jsonDecode(await file.readAsString());
-            if (decoded is! Map<dynamic, dynamic> ||
-                decoded['conversation'] is! Map<dynamic, dynamic> ||
-                decoded['messages'] is! List) {
-              continue;
+          Object? decoded;
+          for (final candidate in [
+            file,
+            File('${file.path}.tmp'),
+            File('${file.path}.bak'),
+          ]) {
+            if (!candidate.existsSync()) continue;
+            try {
+              final value = jsonDecode(await candidate.readAsString());
+              if (value is Map<dynamic, dynamic> &&
+                  value['conversation'] is Map<dynamic, dynamic> &&
+                  value['messages'] is List) {
+                decoded = value;
+                break;
+              }
+            } on Object {
+              // Try the next recoverable copy before skipping this chat.
             }
+          }
+          if (decoded is! Map<dynamic, dynamic>) continue;
+          try {
             final conversation = _conversationFromJson(
               Map<String, dynamic>.from(
                 decoded['conversation'] as Map<dynamic, dynamic>,
@@ -311,7 +340,13 @@ class AgentDataStore {
     await _pendingWrites[conversation.id]?.catchError((Object _) {});
     final directories = await directoriesFor(conversation);
     final file = File(_join([directories.root.path, 'chat.json']));
-    if (file.existsSync()) await file.delete();
+    for (final candidate in [
+      file,
+      File('${file.path}.tmp'),
+      File('${file.path}.bak'),
+    ]) {
+      if (candidate.existsSync()) await candidate.delete();
+    }
   }
 
   Future<String> readUserProfile() async {
@@ -657,12 +692,20 @@ class AgentDataStore {
       ToolActionStatus.values,
       json['toolActionStatus'],
     );
+    var content = json['content'] as String? ?? '';
     if (status == ChatMessageStatus.streaming) {
       status = ChatMessageStatus.stopped;
     }
     if (status == ChatMessageStatus.awaitingApproval) {
       status = ChatMessageStatus.complete;
       actionStatus = ToolActionStatus.cancelled;
+    } else if (role == ChatMessageRole.tool &&
+        actionStatus == ToolActionStatus.running) {
+      status = ChatMessageStatus.complete;
+      actionStatus = ToolActionStatus.outcomeUnknown;
+      content = content.isEmpty
+          ? 'Penguin Code closed before recording this action result. The action may have run. Check the working folder and any recovery checkpoint before retrying.'
+          : '$content\n\nPenguin Code closed before recording this action result. The action may have run. Check the working folder and any recovery checkpoint before retrying.';
     }
     final attachments = (json['attachments'] as List? ?? const [])
         .whereType<Map<dynamic, dynamic>>()
@@ -685,7 +728,7 @@ class AgentDataStore {
     return ChatMessage(
       id: json['id'] as String? ?? '',
       role: role,
-      content: json['content'] as String? ?? '',
+      content: content,
       status: status,
       error: json['error'] as String?,
       attachments: attachments,

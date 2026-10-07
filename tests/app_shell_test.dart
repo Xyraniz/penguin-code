@@ -2199,55 +2199,84 @@ void main() {
         find.text('Approved project edits will appear here.'), findsOneWidget);
   });
 
-  testWidgets('delegates a focused task and returns its result to the parent', (
+  testWidgets('runs delegated work in the background and delivers its result', (
     tester,
   ) async {
     await _setDesktopSize(tester);
     final requests = <Map<String, dynamic>>[];
-    var responseIndex = 0;
+    final childStarted = Completer<void>();
+    final releaseChild = Completer<void>();
     String? childTaskId;
+    const parentPrompt = 'Use a subagent to review authentication.';
+    const childPrompt = 'Inspect the authentication flow and summarize risks.';
+    const childFollowUp = 'Verify the finding and update the summary.';
+    const parentFollowUp = 'List my subagent tasks and summarize the review.';
+    const parentResultPrompt = 'Summarize the finished review.';
+    addTearDown(() {
+      if (!releaseChild.isCompleted) releaseChild.complete();
+    });
     final client = OpenAiCompatibleChatClient(
       client: _FakeChatClient((request) async {
-        requests.add(
-          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
-        );
-        final response = switch (responseIndex++) {
-          0 => _sseToolCall(
-              name: 'delegate_task',
-              arguments: jsonEncode({
-                'task': 'Inspect the authentication flow and summarize risks.',
-              }),
-              id: 'delegate-auth-review',
-            ),
-          1 => _sseChunk('The flow has one missing token expiry check.'),
-          2 => _sseChunk('The review found one token expiry risk.'),
-          3 =>
-            _sseChunk('I verified the expiry check in the saved transcript.'),
-          4 => _sseToolCall(
-              name: 'list_subagent_tasks',
-              arguments: '{}',
-              id: 'list-auth-review',
-            ),
-          5 => () {
-              final messages = requests.last['messages'] as List<dynamic>;
-              final listing = messages
-                  .whereType<Map<String, dynamic>>()
-                  .lastWhere((message) => message['role'] == 'tool');
-              childTaskId = RegExp(r'id: ([^\n]+)')
-                  .firstMatch(listing['content'].toString())
-                  ?.group(1);
-              return _sseToolCall(
-                name: 'continue_subagent_task',
-                arguments: jsonEncode({
-                  'task_id': childTaskId,
-                  'message': 'Summarize the verified finding.',
-                }),
-                id: 'continue-auth-review',
-              );
-            }(),
-          6 => _sseChunk('The finding is an expired token check.'),
-          _ => _sseChunk('The continued review confirms the expiry finding.'),
-        };
+        final body =
+            jsonDecode((request as http.Request).body) as Map<String, dynamic>;
+        requests.add(body);
+        final messages = (body['messages'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .toList(growable: false);
+        final latestUser = messages
+            .lastWhere((message) => message['role'] == 'user')['content'];
+        final lastMessage = messages.last;
+        final lastToolContent = lastMessage['role'] == 'tool'
+            ? lastMessage['content'].toString()
+            : '';
+        late String response;
+        if (latestUser == parentPrompt && lastMessage['role'] == 'user') {
+          response = _sseToolCall(
+            name: 'delegate_task',
+            arguments: jsonEncode({'task': childPrompt}),
+            id: 'delegate-auth-review',
+          );
+        } else if (latestUser == childPrompt) {
+          if (!childStarted.isCompleted) childStarted.complete();
+          await releaseChild.future;
+          response = _sseChunk('The flow has one missing token expiry check.');
+        } else if (latestUser == parentPrompt &&
+            lastMessage['role'] == 'tool') {
+          response = _sseChunk('The review has started in the background.');
+        } else if (latestUser == childFollowUp) {
+          response =
+              _sseChunk('I verified the expiry check in the saved transcript.');
+        } else if (latestUser == 'Summarize the verified finding.') {
+          response = _sseChunk('The finding is an expired token check.');
+        } else if (latestUser == parentFollowUp &&
+            lastMessage['role'] == 'user') {
+          response = _sseToolCall(
+            name: 'list_subagent_tasks',
+            arguments: '{}',
+            id: 'list-auth-review',
+          );
+        } else if (latestUser == parentFollowUp &&
+            lastToolContent
+                .startsWith('Delegated tasks for this conversation')) {
+          childTaskId =
+              RegExp(r'id: ([^\n]+)').firstMatch(lastToolContent)?.group(1);
+          response = _sseToolCall(
+            name: 'continue_subagent_task',
+            arguments: jsonEncode({
+              'task_id': childTaskId,
+              'message': 'Summarize the verified finding.',
+            }),
+            id: 'continue-auth-review',
+          );
+        } else if (latestUser == parentFollowUp &&
+            lastToolContent.contains('is continuing in the background')) {
+          response =
+              _sseChunk('The review task is continuing in the background.');
+        } else if (latestUser == parentResultPrompt) {
+          response = _sseChunk('The subagent confirmed the expiry finding.');
+        } else {
+          fail('Unexpected model request: $latestUser / $lastToolContent');
+        }
         return _chatResponse('$response\ndata: [DONE]\n\n');
       }),
     );
@@ -2270,45 +2299,52 @@ void main() {
     await _startProjectChat(tester);
     await tester.enterText(
       find.byKey(const Key('composer.input')),
-      'Use a subagent to review authentication.',
+      parentPrompt,
     );
     await tester.tap(find.byKey(const Key('composer.send')));
     await _pumpUntilVisible(
       tester,
-      find.text('The review found one token expiry risk.'),
+      find.text('The review has started in the background.'),
     );
+    for (var attempt = 0;
+        attempt < 80 && !childStarted.isCompleted;
+        attempt++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+    expect(childStarted.isCompleted, isTrue);
+    expect(releaseChild.isCompleted, isFalse);
 
-    expect(requests, hasLength(3));
     final parentToolNames = (requests.first['tools'] as List<dynamic>)
         .cast<Map<String, dynamic>>()
         .map((tool) =>
             (tool['function'] as Map<String, dynamic>)['name'] as String)
         .toSet();
     expect(parentToolNames, contains('delegate_task'));
-    final childMessages = requests[1]['messages'] as List<dynamic>;
+    final childRequest = requests.firstWhere((body) {
+      final messages = body['messages'] as List<dynamic>;
+      return messages.whereType<Map<String, dynamic>>().any((message) =>
+          message['role'] == 'user' && message['content'] == childPrompt);
+    });
+    final childMessages = childRequest['messages'] as List<dynamic>;
     expect(childMessages.last['role'], 'user');
-    expect(
-      childMessages.last['content'],
-      'Inspect the authentication flow and summarize risks.',
-    );
+    expect(childMessages.last['content'], childPrompt);
     expect(
       childMessages.any((message) =>
-          (message as Map<String, dynamic>)['content'] ==
-          'Use a subagent to review authentication.'),
+          (message as Map<String, dynamic>)['content'] == parentPrompt),
       isFalse,
     );
-    final parentToolResult = (requests[2]['messages'] as List<dynamic>)
-        .whereType<Map<String, dynamic>>()
-        .lastWhere((message) => message['role'] == 'tool');
-    expect(
-      parentToolResult['content'],
-      contains('The flow has one missing token expiry check.'),
-    );
 
+    releaseChild.complete();
+    await _pumpUntilVisible(
+      tester,
+      find.textContaining('The flow has one missing token expiry check.'),
+    );
     await tester.tap(find.byKey(const Key('topbar.agents')));
     await tester.pumpAndSettle();
-    expect(find.text('Inspect the authentication flow and summarize risks.'),
-        findsOneWidget);
+    expect(find.text(childPrompt), findsOneWidget);
     expect(find.text('Completed'), findsOneWidget);
     expect(
       find.textContaining('The flow has one missing token expiry check.'),
@@ -2330,7 +2366,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(
       find.byKey(const Key('agents.task.followup.input')),
-      'Verify the finding and update the summary.',
+      childFollowUp,
     );
     await tester.tap(find.byKey(const Key('agents.task.followup.send')));
     await _pumpUntilVisible(
@@ -2338,8 +2374,13 @@ void main() {
       find.text('I verified the expiry check in the saved transcript.'),
     );
 
-    expect(requests, hasLength(4));
-    final continuedMessages = requests.last['messages'] as List<dynamic>;
+    final childContinuationRequest = requests.firstWhere((body) {
+      final messages = body['messages'] as List<dynamic>;
+      return messages.whereType<Map<String, dynamic>>().any((message) =>
+          message['role'] == 'user' && message['content'] == childFollowUp);
+    });
+    final continuedMessages =
+        childContinuationRequest['messages'] as List<dynamic>;
     expect(
       continuedMessages.whereType<Map<String, dynamic>>().map(
             (message) => message['content'],
@@ -2355,16 +2396,43 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(
       find.byKey(const Key('composer.input')),
-      'List my subagent tasks and summarize the review.',
+      parentFollowUp,
     );
     await tester.tap(find.byKey(const Key('composer.send')));
     await _pumpUntilVisible(
       tester,
-      find.text('The continued review confirms the expiry finding.'),
+      find.text('The review task is continuing in the background.'),
+    );
+    await _pumpUntilVisible(
+      tester,
+      find.textContaining('The finding is an expired token check.'),
+    );
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      parentResultPrompt,
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+      tester,
+      find.text('The subagent confirmed the expiry finding.'),
     );
     expect(childTaskId, task.agentTask!.id);
-    expect(requests, hasLength(8));
-    final managementTools = (requests[4]['tools'] as List<dynamic>)
+    final parentTaskRequest = requests.firstWhere((body) {
+      final messages = body['messages'] as List<dynamic>;
+      return messages.whereType<Map<String, dynamic>>().any((message) =>
+          message['role'] == 'user' && message['content'] == parentFollowUp);
+    });
+    expect(
+      (parentTaskRequest['messages'] as List<dynamic>)
+          .whereType<Map<String, dynamic>>()
+          .any((message) =>
+              message['role'] == 'tool' &&
+              message['content']
+                  .toString()
+                  .contains('The flow has one missing token expiry check.')),
+      isTrue,
+    );
+    final managementTools = (parentTaskRequest['tools'] as List<dynamic>)
         .cast<Map<String, dynamic>>()
         .map((tool) =>
             (tool['function'] as Map<String, dynamic>)['name'] as String)
@@ -2376,20 +2444,30 @@ void main() {
           'continue_subagent_task',
           'stop_subagent_task',
         ]));
-    final childContinuationRequest = requests[6]['messages'] as List<dynamic>;
+    final delegatedFollowUpRequest = requests.firstWhere((body) {
+      final messages = body['messages'] as List<dynamic>;
+      return messages.whereType<Map<String, dynamic>>().any((message) =>
+          message['role'] == 'user' &&
+          message['content'] == 'Summarize the verified finding.');
+    });
+    final childContinuationMessages =
+        delegatedFollowUpRequest['messages'] as List<dynamic>;
     expect(
-      childContinuationRequest.whereType<Map<String, dynamic>>().any(
+      childContinuationMessages.whereType<Map<String, dynamic>>().any(
           (message) =>
               message['role'] == 'user' &&
               message['content'] == 'Summarize the verified finding.'),
       isTrue,
     );
-    final continuationResult = (requests[7]['messages'] as List<dynamic>)
+    final resultRequest = requests.last;
+    final resultToolMessages = (resultRequest['messages'] as List<dynamic>)
         .whereType<Map<String, dynamic>>()
-        .lastWhere((message) => message['role'] == 'tool');
+        .where((message) => message['role'] == 'tool');
     expect(
-      continuationResult['content'].toString(),
-      contains('The finding is an expired token check.'),
+      resultToolMessages.any((message) => message['content']
+          .toString()
+          .contains('The finding is an expired token check.')),
+      isTrue,
     );
 
     await tester.tap(find.byKey(const Key('sidebar.settings')));
@@ -2401,10 +2479,10 @@ void main() {
     await tester.pumpAndSettle();
     await _pumpUntilVisible(
       tester,
-      find.text('Inspect the authentication flow and summarize risks.'),
+      find.text(childPrompt),
     );
     expect(
-      find.text('Inspect the authentication flow and summarize risks.'),
+      find.text(childPrompt),
       findsOneWidget,
     );
     expect(find.text('Completed'), findsOneWidget);
@@ -2558,27 +2636,47 @@ void main() {
       path: projectDirectory.path,
     );
     final requests = <Map<String, dynamic>>[];
-    var responseIndex = 0;
+    const parentPrompt = 'Delegate a read-only review of the project README.';
+    const childPrompt = 'Read README.md and summarize it.';
+    const parentFollowUp = 'Summarize the completed README review.';
+    const childSummary = 'The README identifies this as a test project.';
     final client = OpenAiCompatibleChatClient(
       client: _FakeChatClient((request) async {
-        requests.add(
-          jsonDecode((request as http.Request).body) as Map<String, dynamic>,
-        );
-        final response = switch (responseIndex++) {
-          0 => _sseToolCall(
-              name: 'delegate_task',
-              arguments:
-                  jsonEncode({'task': 'Read README.md and summarize it.'}),
-              id: 'delegate-readme',
-            ),
-          1 => _sseToolCall(
-              name: 'read_project_file',
-              arguments: '{"path":"README.md"}',
-              id: 'child-readme-read',
-            ),
-          2 => _sseChunk('The README identifies this as a test project.'),
-          _ => _sseChunk('The README review is complete.'),
-        };
+        final body =
+            jsonDecode((request as http.Request).body) as Map<String, dynamic>;
+        requests.add(body);
+        final messages = (body['messages'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .toList(growable: false);
+        final latestUser = messages
+            .lastWhere((message) => message['role'] == 'user')['content'];
+        final lastMessage = messages.last;
+        final lastToolContent = lastMessage['role'] == 'tool'
+            ? lastMessage['content'].toString()
+            : '';
+        final response =
+            latestUser == parentPrompt && lastMessage['role'] == 'user'
+                ? _sseToolCall(
+                    name: 'delegate_task',
+                    arguments: jsonEncode({'task': childPrompt}),
+                    id: 'delegate-readme',
+                  )
+                : latestUser == parentPrompt && lastMessage['role'] == 'tool'
+                    ? _sseChunk('The README review started in the background.')
+                    : latestUser == childPrompt && lastMessage['role'] == 'user'
+                        ? _sseToolCall(
+                            name: 'read_project_file',
+                            arguments: '{"path":"README.md"}',
+                            id: 'child-readme-read',
+                          )
+                        : latestUser == childPrompt &&
+                                lastToolContent.contains('# Test project')
+                            ? _sseChunk(childSummary)
+                            : latestUser == parentFollowUp
+                                ? _sseChunk('The README review is complete.')
+                                : () => fail(
+                                      'Unexpected model request: $latestUser / $lastToolContent',
+                                    );
         return _chatResponse('$response\ndata: [DONE]\n\n');
       }),
     );
@@ -2601,14 +2699,16 @@ void main() {
     await _startProjectChatFor(tester, project.id);
     await tester.enterText(
       find.byKey(const Key('composer.input')),
-      'Delegate a read-only review of the project README.',
+      parentPrompt,
     );
     await tester.tap(find.byKey(const Key('composer.send')));
     await tester.pump();
     await tester.tap(find.byKey(const Key('topbar.agents')));
     await tester.pumpAndSettle();
     await _pumpUntilVisible(
-        tester, find.text('Read README.md and summarize it.'));
+      tester,
+      find.text(childPrompt),
+    );
     final approvalButton = find.byWidgetPredicate((widget) {
       final key = widget.key;
       return key is ValueKey<String> &&
@@ -2618,20 +2718,50 @@ void main() {
     expect(find.text('Approval needed'), findsOneWidget);
     await tester.ensureVisible(approvalButton);
     await tester.tap(approvalButton);
+    final childSummaryFinder = find.byWidgetPredicate(
+      (widget) => widget is SelectableText && widget.data == childSummary,
+    );
+    for (var attempt = 0;
+        attempt < 200 && childSummaryFinder.evaluate().isEmpty;
+        attempt++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+    expect(childSummaryFinder, findsOneWidget);
     await tester.tap(find.text('Chat').first);
+    await tester.pump();
     await _pumpUntilVisible(
-        tester, find.text('The README review is complete.'));
+      tester,
+      find.byKey(const Key('composer.input')),
+    );
+    final parentResultFinder = find.byWidgetPredicate(
+      (widget) =>
+          widget is SelectableText &&
+          (widget.data?.contains(childSummary) ?? false),
+    );
+    await _pumpUntilVisible(tester, parentResultFinder);
 
     expect(requests, hasLength(4));
-    final childReadResult = requests[2]['messages'] as List<dynamic>;
+    final childReadResult = requests[3]['messages'] as List<dynamic>;
     expect(childReadResult.last['role'], 'tool');
     expect(childReadResult.last['content'], contains('# Test project'));
-    final parentToolResult = (requests[3]['messages'] as List<dynamic>)
-        .whereType<Map<String, dynamic>>()
-        .lastWhere((message) => message['role'] == 'tool');
+    await tester.enterText(
+      find.byKey(const Key('composer.input')),
+      parentFollowUp,
+    );
+    await tester.tap(find.byKey(const Key('composer.send')));
+    await _pumpUntilVisible(
+        tester, find.text('The README review is complete.'));
+    expect(requests, hasLength(5));
     expect(
-      parentToolResult['content'],
-      contains('The README identifies this as a test project.'),
+      (requests[4]['messages'] as List<dynamic>)
+          .whereType<Map<String, dynamic>>()
+          .where((message) => message['role'] == 'tool')
+          .any((message) =>
+              message['content'].toString().contains(childSummary)),
+      isTrue,
     );
   });
 
@@ -2733,6 +2863,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(requests, hasLength(4));
+    await _pumpUntilVisible(tester, find.textContaining('Goal achieved:'));
     final initialMessages = requests.first['messages'] as List<dynamic>;
     expect(initialMessages.last['content'], 'all widget tests pass');
     expect(initialMessages.first['content'],
@@ -2874,7 +3005,7 @@ Future<void> _createNewChat(WidgetTester tester) async {
 }
 
 Future<void> _pumpUntilVisible(WidgetTester tester, Finder finder) async {
-  for (var attempt = 0; attempt < 40 && finder.evaluate().isEmpty; attempt++) {
+  for (var attempt = 0; attempt < 200 && finder.evaluate().isEmpty; attempt++) {
     await tester.pump(const Duration(milliseconds: 50));
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 10)),

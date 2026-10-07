@@ -180,4 +180,73 @@ void main() {
       'I found an expired token check.',
     ]);
   });
+
+  test('recovers unfinished tool calls as uncertain and never retries them',
+      () async {
+    final documents = await Directory.systemTemp.createTemp(
+      'penguin-interrupted-tool-recovery-',
+    );
+    addTearDown(() => documents.delete(recursive: true));
+    final store = AgentDataStore(documentsDirectory: documents);
+    const conversation = ChatConversation(
+      id: 'recovery-chat',
+      title: 'Recover an interrupted action',
+      projectId: null,
+    );
+    const runningAction = ChatMessage(
+      id: 'action-1',
+      role: ChatMessageRole.tool,
+      content: '',
+      status: ChatMessageStatus.complete,
+      toolCallId: 'call-1',
+      toolName: 'run_command',
+      toolArguments: {'command': 'format project'},
+      toolActionStatus: ToolActionStatus.running,
+    );
+    const awaitingApproval = ChatMessage(
+      id: 'action-2',
+      role: ChatMessageRole.tool,
+      content: '',
+      status: ChatMessageStatus.awaitingApproval,
+      toolCallId: 'call-2',
+      toolName: 'edit_project_file',
+      toolActionStatus: ToolActionStatus.awaitingApproval,
+    );
+
+    await store.saveConversation(
+      conversation,
+      [runningAction, awaitingApproval],
+    );
+    final recovered = await store.loadConversations();
+    final messages = recovered.single.messages;
+
+    expect(messages[0].status, ChatMessageStatus.complete);
+    expect(messages[0].toolActionStatus, ToolActionStatus.outcomeUnknown);
+    expect(messages[0].content, contains('The action may have run.'));
+    expect(messages[0].content, contains('before retrying'));
+    expect(messages[1].toolActionStatus, ToolActionStatus.cancelled);
+    expect(
+        messages[1].toolActionStatus, isNot(ToolActionStatus.outcomeUnknown));
+
+    await store.saveConversation(conversation, messages);
+    final loadedAgain = await store.loadConversations();
+    expect(loadedAgain.single.messages[0].content, messages[0].content);
+
+    final directories = await store.directoriesFor(conversation);
+    final chatFile = File(
+      '${directories.root.path}${Platform.pathSeparator}chat.json',
+    );
+    final backupFile = File('${chatFile.path}.bak');
+    await chatFile.rename(backupFile.path);
+    final restoredFromBackup = await store.loadConversations();
+    expect(restoredFromBackup.single.messages[0].toolActionStatus,
+        ToolActionStatus.outcomeUnknown);
+
+    await store.saveConversation(
+      conversation,
+      restoredFromBackup.single.messages,
+    );
+    expect(chatFile.existsSync(), isTrue);
+    expect(backupFile.existsSync(), isFalse);
+  });
 }

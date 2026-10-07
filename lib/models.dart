@@ -319,6 +319,7 @@ enum ToolActionStatus {
   awaitingApproval,
   awaitingPlanReview,
   running,
+  outcomeUnknown,
   completed,
   planApproved,
   planRevisionRequested,

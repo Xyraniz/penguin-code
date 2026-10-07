@@ -1473,6 +1473,8 @@ class _ToolActionCard extends StatelessWidget {
     final isEdit =
         message.toolName == 'edit_project_file' || isCreateInstructions;
     final target = message.toolArguments['command'] ??
+        message.toolArguments['task'] ??
+        message.toolArguments['message'] ??
         (isCreateInstructions ? 'AGENTS.md' : null) ??
         message.toolArguments['file_path'] ??
         message.toolArguments['file_name'] ??
@@ -1495,13 +1497,17 @@ class _ToolActionCard extends StatelessWidget {
       ToolActionStatus.awaitingPlanReview => 'Review needed',
       ToolActionStatus.running => message.toolName == 'run_command'
           ? 'Running command'
-          : message.toolName == 'search_past_chats'
-              ? 'Searching past chats'
-              : message.toolName == 'update_task_progress'
-                  ? 'Updating task progress'
-                  : isMcpTool
-                      ? 'Running MCP tool'
-                      : 'Working',
+          : message.toolName == 'delegate_task' ||
+                  message.toolName == 'continue_subagent_task'
+              ? 'Working in background'
+              : message.toolName == 'search_past_chats'
+                  ? 'Searching past chats'
+                  : message.toolName == 'update_task_progress'
+                      ? 'Updating task progress'
+                      : isMcpTool
+                          ? 'Running MCP tool'
+                          : 'Working',
+      ToolActionStatus.outcomeUnknown => 'Outcome unknown',
       ToolActionStatus.completed => 'Completed',
       ToolActionStatus.planApproved => 'Plan approved',
       ToolActionStatus.planRevisionRequested => 'Plan revision requested',
